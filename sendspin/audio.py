@@ -13,6 +13,10 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import re
+import shutil
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -27,6 +31,8 @@ if TYPE_CHECKING:
     from aiosendspin.client import AudioFormat, PCMFormat
 
 logger = logging.getLogger(__name__)
+
+_PREFERRED_ALSA_CONTROLS: Final[tuple[str, ...]] = ("Master", "PCM", "Speaker", "Headphone")
 
 
 @dataclass(slots=True)
@@ -46,6 +52,95 @@ class AudioDevice:
     output_channels: int
     sample_rate: float
     is_default: bool
+
+
+class HardwareVolumeController:
+    """Controls hardware mixer volume via ALSA amixer when available."""
+
+    _CONTROL_REGEX = re.compile(r"Simple mixer control '([^']+)'")
+
+    def __init__(self, device: AudioDevice) -> None:
+        self._card = self._resolve_alsa_card(device.name)
+        self._control: str | None = None
+        self._available = sys.platform.startswith("linux") and shutil.which("amixer") is not None
+        self._warned = False
+
+        if self._available:
+            self._control = self._select_control()
+            if self._control is None:
+                self._available = False
+            else:
+                logger.info("Using ALSA mixer control '%s' for hardware volume", self._control)
+
+    @property
+    def available(self) -> bool:
+        """Return whether hardware volume control is available."""
+        return self._available and self._control is not None
+
+    def set_volume(self, volume: int, *, muted: bool) -> bool:
+        """Set hardware mixer volume. Returns True on success."""
+        if not self.available:
+            return False
+
+        volume = max(0, min(100, volume))
+        target_volume = 0 if muted else volume
+        control = self._control
+        if control is None:
+            return False
+        args = self._amixer_args() + ["set", control, f"{target_volume}%"]
+        args.append("mute" if muted else "unmute")
+
+        try:
+            subprocess.run(args, check=True, capture_output=True, text=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            self._disable(f"amixer failed: {exc}")
+            return False
+
+        return True
+
+    def _amixer_args(self) -> list[str]:
+        args = ["amixer"]
+        if self._card:
+            args += ["-c", self._card]
+        return args
+
+    def _select_control(self) -> str | None:
+        try:
+            output = subprocess.run(
+                self._amixer_args() + ["scontrols"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+        except (OSError, subprocess.CalledProcessError) as exc:
+            self._disable(f"unable to list ALSA controls: {exc}")
+            return None
+
+        controls = cast(list[str], self._CONTROL_REGEX.findall(output))
+        if not controls:
+            return None
+
+        for preferred in _PREFERRED_ALSA_CONTROLS:
+            if preferred in controls:
+                return preferred
+        return controls[0]
+
+    def _disable(self, reason: str) -> None:
+        if not self._warned:
+            logger.warning(
+                "Hardware volume control unavailable (%s). Falling back to software volume.",
+                reason,
+            )
+            self._warned = True
+        self._available = False
+
+    @staticmethod
+    def _resolve_alsa_card(device_name: str) -> str | None:
+        if match := re.search(r"CARD=([^,]+)", device_name):
+            return cast(str, match.group(1))
+        if match := re.search(r"(?:plughw|hw):(\d+)", device_name):
+            return cast(str, match.group(1))
+        return None
 
 
 def query_devices() -> list[AudioDevice]:
@@ -178,6 +273,9 @@ class AudioPlayer:
         loop: asyncio.AbstractEventLoop,
         compute_client_time: Callable[[int], int],
         compute_server_time: Callable[[int], int],
+        *,
+        use_hardware_volume: bool = True,
+        audio_device: AudioDevice | None = None,
     ) -> None:
         """
         Initialize the audio player.
@@ -189,6 +287,8 @@ class AudioPlayer:
                 and static delay.
             compute_server_time: Function that converts client timestamps (monotonic
                 loop time) to server timestamps (inverse of compute_client_time).
+            use_hardware_volume: Whether to prefer hardware mixer volume control.
+            audio_device: Audio device used for playback (for hardware mixer mapping).
         """
         self._loop = loop
         self._compute_client_time = compute_client_time
@@ -202,6 +302,12 @@ class AudioPlayer:
 
         self._volume: int = 100  # 0-100 range
         self._muted: bool = False
+        self._hardware_volume: HardwareVolumeController | None = None
+        self._hardware_volume_active = False
+        if use_hardware_volume and audio_device is not None:
+            self._hardware_volume = HardwareVolumeController(audio_device)
+            if not self._hardware_volume.available:
+                logger.info("Hardware volume control unavailable; using software volume.")
 
         # Partial chunk tracking (to avoid discarding partial chunks)
         self._current_chunk: _QueuedChunk | None = None
@@ -315,6 +421,11 @@ class AudioPlayer:
         """
         self._volume = max(0, min(100, volume))
         self._muted = muted
+        if self._hardware_volume is not None:
+            if self._hardware_volume.set_volume(self._volume, muted=muted):
+                self._hardware_volume_active = True
+                return
+        self._hardware_volume_active = False
 
     async def stop(self) -> None:
         """Stop playback and release resources."""
@@ -864,6 +975,9 @@ class AudioPlayer:
 
         Scales 16-bit audio samples by the current volume level.
         """
+        if self._hardware_volume_active:
+            return
+
         muted = self._muted
         volume = self._volume
 

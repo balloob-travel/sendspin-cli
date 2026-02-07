@@ -32,6 +32,7 @@ class AudioStreamHandler:
         *,
         volume: int = 100,
         muted: bool = False,
+        use_hardware_volume: bool = True,
         on_event: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the audio stream handler.
@@ -40,11 +41,13 @@ class AudioStreamHandler:
             audio_device: Audio device to use for playback.
             volume: Initial volume (0-100).
             muted: Initial muted state.
+            use_hardware_volume: Whether to prefer hardware mixer volume control.
             on_event: Callback for stream lifecycle events ("start" or "stop").
         """
         self._audio_device = audio_device
         self._volume = volume
         self._muted = muted
+        self._use_hardware_volume = use_hardware_volume
         self._on_event = on_event
         self._client: SendspinClient | None = None
         self.audio_player: AudioPlayer | None = None
@@ -97,7 +100,11 @@ class AudioStreamHandler:
 
             loop = asyncio.get_running_loop()
             self.audio_player = AudioPlayer(
-                loop, self._client.compute_play_time, self._client.compute_server_time
+                loop,
+                self._client.compute_play_time,
+                self._client.compute_server_time,
+                use_hardware_volume=self._use_hardware_volume,
+                audio_device=self._audio_device,
             )
             self.audio_player.set_format(fmt, device=self._audio_device)
             self._current_format = fmt

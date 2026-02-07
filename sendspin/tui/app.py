@@ -205,6 +205,7 @@ class AppArgs:
     url: str | None = None
     static_delay_ms: float | None = None
     use_mpris: bool = True
+    use_hardware_volume: bool = True
     hook_start: str | None = None
     hook_stop: str | None = None
 
@@ -303,6 +304,7 @@ class SendspinApp:
                 audio_device=args.audio_device,
                 volume=self._settings.player_volume,
                 muted=self._settings.player_muted,
+                use_hardware_volume=args.use_hardware_volume,
                 on_event=self._on_stream_event,
             )
 

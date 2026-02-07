@@ -177,6 +177,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Disable MPRIS integration",
     )
     daemon_parser.add_argument(
+        "--disable-hardware-volume",
+        action="store_true",
+        help="Use software volume scaling instead of hardware mixer control",
+    )
+    daemon_parser.add_argument(
         "--hook-start",
         type=str,
         default=None,
@@ -245,6 +250,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--disable-mpris",
         action="store_true",
         help="Disable MPRIS integration",
+    )
+    parser.add_argument(
+        "--disable-hardware-volume",
+        action="store_true",
+        help="Use software volume scaling instead of hardware mixer control",
     )
     parser.add_argument(
         "--headless",
@@ -420,6 +430,7 @@ async def _run_daemon_mode(args: argparse.Namespace, settings: ClientSettings) -
         static_delay_ms=args.static_delay_ms,
         listen_port=args.port,
         use_mpris=args.use_mpris,
+        use_hardware_volume=args.use_hardware_volume,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
     )
@@ -491,6 +502,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
     if args.command == "daemon" and args.port is None:
         args.port = settings.listen_port or 8928
     args.use_mpris = not args.disable_mpris and settings.use_mpris
+    args.use_hardware_volume = not args.disable_hardware_volume and settings.use_hardware_volume
 
     # Apply hook settings (CLI > settings)
     if args.hook_start is None:
@@ -525,6 +537,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         settings=settings,
         static_delay_ms=args.static_delay_ms,
         use_mpris=args.use_mpris,
+        use_hardware_volume=args.use_hardware_volume,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
     )

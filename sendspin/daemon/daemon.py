@@ -46,6 +46,7 @@ class DaemonArgs:
     static_delay_ms: float | None = None
     listen_port: int = 8928
     use_mpris: bool = True
+    use_hardware_volume: bool = True
     hook_start: str | None = None
     hook_stop: str | None = None
 
@@ -127,6 +128,7 @@ class SendspinDaemon:
             audio_device=self._args.audio_device,
             volume=self._settings.player_volume,
             muted=self._settings.player_muted,
+            use_hardware_volume=self._args.use_hardware_volume,
             on_event=self._on_stream_event,
         )
 

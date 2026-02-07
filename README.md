@@ -123,6 +123,7 @@ Settings are stored in `~/.config/sendspin/`:
   "audio_device": "2",
   "log_level": "INFO",
   "listen_port": 8927,
+  "use_hardware_volume": true,
   "use_mpris": true
 }
 ```
@@ -149,6 +150,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `name` | string | All | Friendly name for client or server (`--name`) |
 | `client_id` | string | TUI/daemon | Unique client identifier (`--id`) |
 | `audio_device` | string | TUI/daemon | Audio device index or name prefix (`--audio-device`) |
+| `use_hardware_volume` | boolean | TUI/daemon | Prefer hardware mixer control for player volume (default: true) |
 | `log_level` | string | All | Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL |
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
@@ -207,6 +209,17 @@ sendspin --audio-device "MacBook"
 ```
 
 This is particularly useful when running `sendspin daemon` on headless devices or when you want to route audio to a specific output.
+
+### Hardware Volume Control (Linux)
+
+By default, the client prefers hardware mixer control via ALSA (`amixer`) when available. This keeps the volume in sync with connected amps or DACs and can improve audio quality. If `amixer` is unavailable or the mixer control cannot be resolved, Sendspin falls back to software volume scaling automatically.
+
+To force software volume scaling instead:
+```bash
+sendspin --disable-hardware-volume
+```
+
+Or set `"use_hardware_volume": false` in your settings file.
 
 ### Adjusting Playback Delay
 
