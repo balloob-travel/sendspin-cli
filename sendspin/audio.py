@@ -116,7 +116,7 @@ class HardwareVolumeController:
             self._disable(f"unable to list ALSA controls: {exc}")
             return None
 
-        controls = cast(list[str], self._CONTROL_REGEX.findall(output))
+        controls: list[str] = self._CONTROL_REGEX.findall(output)
         if not controls:
             return None
 
@@ -137,9 +137,9 @@ class HardwareVolumeController:
     @staticmethod
     def _resolve_alsa_card(device_name: str) -> str | None:
         if match := re.search(r"CARD=([^,]+)", device_name):
-            return cast(str, match.group(1))
+            return match.group(1)
         if match := re.search(r"(?:plughw|hw):(\d+)", device_name):
-            return cast(str, match.group(1))
+            return match.group(1)
         return None
 
 
