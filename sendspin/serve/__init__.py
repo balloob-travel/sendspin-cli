@@ -114,6 +114,7 @@ async def run_server(config: ServeConfig) -> int:
 
     client_connected = asyncio.Event()
     active_group: SendspinGroup | None = None
+    first_client_id: str | None = None
     play_media_task: asyncio.Task[None] | None = None
     shutdown_requested = False
 
@@ -130,7 +131,7 @@ async def run_server(config: ServeConfig) -> int:
         event_loop.add_signal_handler(signal.SIGINT, handle_sigint)
 
     def on_server_event(server: SendspinServer, event: SendspinEvent) -> None:
-        nonlocal active_group
+        nonlocal active_group, first_client_id
 
         if isinstance(event, ClientAddedEvent):
             client = server.get_client(event.client_id)
@@ -140,6 +141,7 @@ async def run_server(config: ServeConfig) -> int:
 
             if active_group is None:
                 active_group = client.group
+                first_client_id = event.client_id
                 client_connected.set()
                 return
 
@@ -231,6 +233,20 @@ async def run_server(config: ServeConfig) -> int:
                     break  # type: ignore[unreachable]
 
             assert active_group is not None
+
+            # Wait for the first client to finish its WebSocket handshake.
+            # ClientAddedEvent fires when the client object is created, before
+            # the connection is established and roles are negotiated. Starting
+            # audio before the client is connected causes a tight commit loop
+            # with no backpressure, starving the event loop.
+            if first_client_id is not None:
+                client = server.get_client(first_client_id)
+                while client is not None and not client.is_connected and not shutdown_requested:
+                    await asyncio.sleep(0.05)
+                first_client_id = None
+
+                if shutdown_requested:
+                    break  # type: ignore[unreachable]
 
             # Decode and stream audio
             try:
