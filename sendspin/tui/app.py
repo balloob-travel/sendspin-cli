@@ -205,6 +205,7 @@ class AppArgs:
     static_delay_ms: float | None = None
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
+    use_hardware_volume: bool = False
     hook_start: str | None = None
     hook_stop: str | None = None
 
@@ -271,7 +272,9 @@ class SendspinApp:
                 on_event=self._on_stream_event,
                 on_format_change=self._handle_format_change,
                 on_volume_change=self._on_volume_change,
+                use_hardware_volume=args.use_hardware_volume,
             )
+            await self._audio_handler.read_initial_volume()
 
             self._state.player_volume = self._audio_handler.volume
             self._state.player_muted = self._audio_handler.muted
@@ -300,10 +303,13 @@ class SendspinApp:
             if MPRIS_AVAILABLE and args.use_mpris:
                 self._mpris = SendspinMpris(self._client)
 
+            await self._audio_handler.start_volume_monitor()
+
             self._ui = SendspinUI(
                 delay,
                 player_volume=self._audio_handler.volume,
                 player_muted=self._audio_handler.muted,
+                use_hardware_volume=self._audio_handler.use_hardware_volume,
             )
             self._ui.start()
             self._ui.add_event(f"Using client ID: {args.client_id}")
@@ -395,12 +401,14 @@ class SendspinApp:
 
     def _on_volume_change(self, volume: int, muted: bool) -> None:
         """Handle volume changes from any source (server command, keyboard, external)."""
+        assert self._audio_handler is not None
         assert self._ui is not None
 
         self._state.player_volume = volume
         self._state.player_muted = muted
-        self._settings.update(player_volume=volume, player_muted=muted)
         self._ui.set_player_volume(volume, muted=muted)
+        if not self._audio_handler.use_hardware_volume:
+            self._settings.update(player_volume=volume, player_muted=muted)
 
     async def _connect_cancellable(self, url: str) -> None:
         """Connect to server. Can be cancelled by _cancel_connect().
