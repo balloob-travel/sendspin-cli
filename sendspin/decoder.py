@@ -52,6 +52,24 @@ class FlacDecoder:
         self._codec_ctx.extradata = self._build_extradata()
         self._codec_ctx.open()
 
+        # Use FFmpeg PCM encoder for packed 24-bit output.
+        self._s24_encoder: av.CodecContext | None = None
+        if self._bit_depth == 24:
+            layout = "mono" if self._channels == 1 else "stereo"
+            self._s24_encoder = av.CodecContext.create("pcm_s24le", "w")
+            self._s24_encoder.sample_rate = self._sample_rate  # type: ignore[attr-defined]
+            self._s24_encoder.layout = layout  # type: ignore[attr-defined]
+            self._s24_encoder.format = "s32"  # type: ignore[attr-defined]
+            self._s24_encoder.open()
+            logger.info(
+                "Initialized 24-bit PCM encoder: _s24_encoder=%r _s24_encoder.sample_rate=%r _s24_encoder.layout=%r _s24_encoder.format=%r codec=pcm_s24le channels=%d",
+                self._s24_encoder,
+                getattr(self._s24_encoder, "sample_rate", None),
+                getattr(self._s24_encoder, "layout", None),
+                getattr(self._s24_encoder, "format", None),
+                self._channels,
+            )
+
     def decode(self, flac_frame: bytes) -> bytes:
         """Decode a FLAC frame to PCM samples.
 
@@ -98,10 +116,12 @@ class FlacDecoder:
     def _frame_to_pcm(self, frame: av.AudioFrame) -> bytes:
         """Convert an av.AudioFrame to PCM bytes.
 
-        FFmpeg decodes FLAC to s32 (32-bit signed) format internally, so we need
-        to convert to the target bit depth. The samples are left-justified in
-        the 32-bit container.
+        For 24-bit output, use FFmpeg's pcm_s24le encoder to produce packed
+        3-byte samples. For other target depths, convert in numpy.
         """
+        if self._bit_depth == 24:
+            return self._encode_24bit(frame)
+
         samples_per_channel = frame.samples
 
         # Get source format info
@@ -150,27 +170,14 @@ class FlacDecoder:
     def _convert_bit_depth(self, samples: np.ndarray, src_bits: int) -> bytes:
         """Convert samples from source bit depth to target bit depth."""
         if src_bits == self._bit_depth:
-            # No conversion needed
-            if self._bit_depth == 24:
-                return self._pack_24bit(samples.astype(np.int32))
             return samples.tobytes()
 
         # Convert from source to target bit depth
         # FFmpeg stores samples left-justified, so shift right to normalize
-        if src_bits == 32 and self._bit_depth == 24:
-            # 32-bit to 24-bit: shift right 8 bits, then pack
-            samples_32 = samples.astype(np.int32) >> 8
-            return self._pack_24bit(samples_32)
-
         if src_bits == 32 and self._bit_depth == 16:
             # 32-bit to 16-bit: shift right 16 bits
             samples_16 = (samples.astype(np.int32) >> 16).astype(np.int16)
             return samples_16.tobytes()
-
-        if src_bits == 16 and self._bit_depth == 24:
-            # 16-bit to 24-bit: shift left 8 bits, then pack
-            samples_32 = samples.astype(np.int32) << 8
-            return self._pack_24bit(samples_32)
 
         if src_bits == 16 and self._bit_depth == 32:
             # 16-bit to 32-bit: shift left 16 bits
@@ -181,7 +188,10 @@ class FlacDecoder:
         logger.warning("Unsupported bit depth conversion: %d -> %d", src_bits, self._bit_depth)
         return samples.tobytes()
 
-    def _pack_24bit(self, samples_32: np.ndarray) -> bytes:
-        """Pack 32-bit samples to 24-bit (3 bytes per sample, little-endian)."""
-        raw = samples_32.astype("<i4").view(np.uint8).reshape(-1, 4)
-        return raw[:, :3].tobytes()
+    def _encode_24bit(self, frame: av.AudioFrame) -> bytes:
+        """Encode an audio frame to packed 24-bit little-endian PCM."""
+        assert self._s24_encoder is not None
+        packets = self._s24_encoder.encode(frame)  # type: ignore[attr-defined]
+        if not packets:
+            return b""
+        return b"".join(bytes(packet) for packet in packets)
