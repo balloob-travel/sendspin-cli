@@ -7,7 +7,6 @@ import struct
 from typing import TYPE_CHECKING
 
 import av
-import numpy as np
 
 if TYPE_CHECKING:
     from aiosendspin.client import AudioFormat
@@ -57,6 +56,11 @@ class FlacDecoder:
         self._s24_encoder_layout: str | None = None
         self._s24_encoder_input_format: str | None = None
 
+        # Use FFmpeg audio resampler for 16/32-bit PCM conversion.
+        self._pcm_target_format = {16: "s16", 32: "s32"}.get(self._bit_depth)
+        self._pcm_resampler: av.AudioResampler | None = None
+        self._pcm_resampler_layout: str | None = None
+
     def decode(self, flac_frame: bytes) -> bytes:
         """Decode a FLAC frame to PCM samples.
 
@@ -104,76 +108,11 @@ class FlacDecoder:
         """Convert an av.AudioFrame to PCM bytes.
 
         For 24-bit output, use FFmpeg's pcm_s24le encoder to produce packed
-        3-byte samples. For other target depths, convert in numpy.
+        3-byte samples. For 16/32-bit output, convert via FFmpeg resampler.
         """
         if self._bit_depth == 24:
             return self._encode_24bit(frame)
-
-        samples_per_channel = frame.samples
-
-        # Get source format info
-        src_format = frame.format.name  # e.g., 's32', 's32p', 's16', 's16p'
-        is_planar = frame.format.is_planar
-
-        # Determine source bytes per sample from format
-        # FFmpeg typically decodes FLAC to s32/s32p
-        is_16bit_source = "16" in src_format
-        src_bytes_per_sample = 2 if is_16bit_source else 4
-
-        # Read samples from frame
-        samples: np.ndarray[tuple[int], np.dtype[np.int16 | np.int32]]
-        if is_planar:
-            # Planar: each channel in separate plane, interleave them
-            src_bytes_per_plane = samples_per_channel * src_bytes_per_sample
-            if is_16bit_source:
-                samples = np.empty(samples_per_channel * self._channels, dtype=np.int16)
-                for ch in range(self._channels):
-                    plane_data = np.frombuffer(
-                        bytes(frame.planes[ch])[:src_bytes_per_plane], dtype=np.int16
-                    )
-                    samples[ch :: self._channels] = plane_data
-            else:
-                samples = np.empty(samples_per_channel * self._channels, dtype=np.int32)
-                for ch in range(self._channels):
-                    plane_data = np.frombuffer(
-                        bytes(frame.planes[ch])[:src_bytes_per_plane], dtype=np.int32
-                    )
-                    samples[ch :: self._channels] = plane_data
-        else:
-            # Packed: all channels interleaved in plane 0
-            total_src_bytes = samples_per_channel * self._channels * src_bytes_per_sample
-            if is_16bit_source:
-                samples = np.frombuffer(
-                    bytes(frame.planes[0])[:total_src_bytes], dtype=np.int16
-                ).copy()
-            else:
-                samples = np.frombuffer(
-                    bytes(frame.planes[0])[:total_src_bytes], dtype=np.int32
-                ).copy()
-
-        # Convert to target bit depth
-        return self._convert_bit_depth(samples, src_bytes_per_sample * 8)
-
-    def _convert_bit_depth(self, samples: np.ndarray, src_bits: int) -> bytes:
-        """Convert samples from source bit depth to target bit depth."""
-        if src_bits == self._bit_depth:
-            return samples.tobytes()
-
-        # Convert from source to target bit depth
-        # FFmpeg stores samples left-justified, so shift right to normalize
-        if src_bits == 32 and self._bit_depth == 16:
-            # 32-bit to 16-bit: shift right 16 bits
-            samples_16 = (samples.astype(np.int32) >> 16).astype(np.int16)
-            return samples_16.tobytes()
-
-        if src_bits == 16 and self._bit_depth == 32:
-            # 16-bit to 32-bit: shift left 16 bits
-            samples_32 = samples.astype(np.int32) << 16
-            return samples_32.tobytes()
-
-        # Fallback: just return as-is (may not work correctly)
-        logger.warning("Unsupported bit depth conversion: %d -> %d", src_bits, self._bit_depth)
-        return samples.tobytes()
+        return self._convert_with_resampler(frame)
 
     def _encode_24bit(self, frame: av.AudioFrame) -> bytes:
         """Encode an audio frame to packed 24-bit little-endian PCM."""
@@ -203,3 +142,53 @@ class FlacDecoder:
         if not packets:
             return b""
         return b"".join(bytes(packet) for packet in packets)
+
+    def _convert_with_resampler(self, frame: av.AudioFrame) -> bytes:
+        """Convert a frame to packed 16/32-bit PCM via FFmpeg resampler."""
+        if self._pcm_target_format is None:
+            logger.warning(
+                "Unsupported target bit depth for FFmpeg conversion: %d", self._bit_depth
+            )
+            return b""
+
+        layout_name = frame.layout.name
+        if self._pcm_resampler is None or self._pcm_resampler_layout != layout_name:
+            self._pcm_resampler = av.AudioResampler(
+                format=self._pcm_target_format,
+                layout=frame.layout,
+                rate=self._sample_rate,
+            )
+            self._pcm_resampler_layout = layout_name
+            logger.info(
+                "Initialized PCM resampler: target_format=%s layout=%s channels=%d",
+                self._pcm_target_format,
+                layout_name,
+                self._channels,
+            )
+
+        output_frames = self._pcm_resampler.resample(frame)
+        pcm_bytes = bytearray()
+        for output_frame in output_frames:
+            pcm_bytes.extend(self._extract_frame_bytes(output_frame))
+        return bytes(pcm_bytes)
+
+    def _extract_frame_bytes(self, frame: av.AudioFrame) -> bytes:
+        """Extract interleaved PCM bytes from a frame while ignoring plane padding."""
+        bytes_per_sample = self._bit_depth // 8
+        actual_bytes = frame.samples * self._channels * bytes_per_sample
+
+        if not frame.format.is_planar:
+            return bytes(frame.planes[0])[:actual_bytes]
+
+        plane_bytes = frame.samples * bytes_per_sample
+        planes = [bytes(frame.planes[ch])[:plane_bytes] for ch in range(self._channels)]
+        interleaved = bytearray(actual_bytes)
+        for sample_idx in range(frame.samples):
+            src_start = sample_idx * bytes_per_sample
+            dst_base = sample_idx * self._channels * bytes_per_sample
+            for channel_idx, plane in enumerate(planes):
+                dst_start = dst_base + channel_idx * bytes_per_sample
+                interleaved[dst_start : dst_start + bytes_per_sample] = plane[
+                    src_start : src_start + bytes_per_sample
+                ]
+        return bytes(interleaved)
