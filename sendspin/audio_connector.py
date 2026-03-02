@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -20,6 +21,101 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class _FlacDecodeWorker:
+    """Decode FLAC chunks on a dedicated single worker thread."""
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        audio_format: AudioFormat,
+        on_decoded: Callable[[int, bytes], None],
+    ) -> None:
+        self._loop = loop
+        self._audio_format = audio_format
+        self._on_decoded = on_decoded
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="sendspin-flac"
+        )
+        self._decoder: FlacDecoder | None = None
+        self._closed = False
+        self._generation = 0
+        self._next_sequence = 0
+        self._next_expected_sequence = 0
+        self._pending: dict[int, tuple[int, bytes]] = {}
+
+    def submit(self, server_timestamp_us: int, flac_data: bytes) -> None:
+        """Queue a FLAC chunk for decode."""
+        if self._closed:
+            return
+        sequence = self._next_sequence
+        self._next_sequence += 1
+        generation = self._generation
+        future = self._executor.submit(
+            self._decode_one, generation, sequence, server_timestamp_us, flac_data
+        )
+        future.add_done_callback(self._on_decode_done)
+
+    def discard_pending(self) -> None:
+        """Drop queued/decoded results from previous stream timeline."""
+        if self._closed:
+            return
+        self._generation += 1
+        self._next_expected_sequence = self._next_sequence
+        self._pending.clear()
+
+    def close(self, *, wait: bool) -> None:
+        """Stop the worker and prevent any further decoded delivery."""
+        if self._closed:
+            return
+        self._closed = True
+        self._pending.clear()
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+
+    def _decode_one(
+        self,
+        generation: int,
+        sequence: int,
+        server_timestamp_us: int,
+        flac_data: bytes,
+    ) -> tuple[int, int, int, bytes]:
+        if self._decoder is None:
+            self._decoder = FlacDecoder(self._audio_format)
+        pcm_data = self._decoder.decode(flac_data)
+        return generation, sequence, server_timestamp_us, pcm_data
+
+    def _on_decode_done(
+        self,
+        future: concurrent.futures.Future[tuple[int, int, int, bytes]],
+    ) -> None:
+        try:
+            result = future.result()
+        except Exception:
+            logger.exception("FLAC decode worker failed")
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._deliver_decoded, *result)
+        except RuntimeError:
+            # Loop may already be closed during shutdown.
+            pass
+
+    def _deliver_decoded(
+        self,
+        generation: int,
+        sequence: int,
+        server_timestamp_us: int,
+        pcm_data: bytes,
+    ) -> None:
+        if self._closed or generation != self._generation:
+            return
+
+        self._pending[sequence] = (server_timestamp_us, pcm_data)
+        while self._next_expected_sequence in self._pending:
+            next_server_ts, next_pcm = self._pending.pop(self._next_expected_sequence)
+            self._next_expected_sequence += 1
+            if next_pcm:
+                self._on_decoded(next_server_ts, next_pcm)
 
 
 class AudioStreamHandler:
@@ -64,7 +160,8 @@ class AudioStreamHandler:
         self._client: SendspinClient | None = None
         self.audio_player: AudioPlayer | None = None
         self._current_format: AudioFormat | None = None
-        self._flac_decoder: FlacDecoder | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._flac_worker: _FlacDecodeWorker | None = None
         self._stream_active = False  # Track if stream is currently active
 
         self._hw_volume: HardwareVolumeController | None = None
@@ -168,35 +265,36 @@ class AudioStreamHandler:
         """Handle incoming audio chunks.
 
         For PCM codec, audio_data is passed directly to the player.
-        For FLAC codec, audio_data is decoded to PCM first.
+        For FLAC codec, audio_data is decoded to PCM on a worker thread first.
         """
         assert self._client is not None, "Received audio chunk but client is not attached"
 
         pcm_format = fmt.pcm_format
+        loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = loop
 
         # Initialize or reconfigure audio player if format changed
         if self.audio_player is None or self._current_format != fmt:
             if self.audio_player is not None:
                 self.audio_player.clear()
 
-            loop = asyncio.get_running_loop()
             self.audio_player = AudioPlayer(
                 loop, self._client.compute_play_time, self._client.compute_server_time
             )
             self.audio_player.set_format(fmt, device=self._audio_device)
             self._current_format = fmt
 
-            # Initialize FLAC decoder if needed
+            # Initialize/destroy FLAC decode worker as needed.
+            self._shutdown_flac_worker(wait=False)
             if fmt.codec == AudioCodec.FLAC:
-                self._flac_decoder = FlacDecoder(fmt)
+                self._flac_worker = _FlacDecodeWorker(loop, fmt, self._submit_decoded_chunk)
                 logger.info(
-                    "Initialized FLAC decoder for %dHz/%d-bit/%dch",
+                    "Initialized FLAC decode worker for %dHz/%d-bit/%dch",
                     pcm_format.sample_rate,
                     pcm_format.bit_depth,
                     pcm_format.channels,
                 )
-            else:
-                self._flac_decoder = None
 
             if self._hw_volume is None:
                 self.audio_player.set_volume(self._volume, muted=self._muted)
@@ -209,19 +307,46 @@ class AudioStreamHandler:
                     pcm_format.channels,
                 )
 
-        # Decode FLAC to PCM if needed
-        if fmt.codec == AudioCodec.FLAC and self._flac_decoder is not None:
-            pcm_data = self._flac_decoder.decode(audio_data)
-            if not pcm_data:
-                logger.debug("FLAC decode returned empty, skipping chunk")
-                return
-            audio_data = pcm_data
+        # Decode FLAC on dedicated worker thread if needed.
+        if fmt.codec == AudioCodec.FLAC:
+            if self._flac_worker is None:
+                self._flac_worker = _FlacDecodeWorker(loop, fmt, self._submit_decoded_chunk)
+                logger.info(
+                    "Reinitialized FLAC decode worker for %dHz/%d-bit/%dch",
+                    pcm_format.sample_rate,
+                    pcm_format.bit_depth,
+                    pcm_format.channels,
+                )
+            self._flac_worker.submit(server_timestamp_us, audio_data)
+            return
 
-        # Submit audio chunk - AudioPlayer handles timing
+        # Submit audio chunk - AudioPlayer handles timing.
         self.audio_player.async_submit(server_timestamp_us, audio_data)
+
+    def _submit_decoded_chunk(self, server_timestamp_us: int, pcm_data: bytes) -> None:
+        """Submit decoded FLAC PCM back on event loop thread."""
+        if not pcm_data:
+            logger.debug("FLAC decode returned empty, skipping chunk")
+            return
+        if self.audio_player is None:
+            return
+        self.audio_player.async_submit(server_timestamp_us, pcm_data)
+
+    def _shutdown_flac_worker(self, *, wait: bool) -> None:
+        """Stop and clear FLAC decode worker."""
+        worker = self._flac_worker
+        self._flac_worker = None
+        if worker is not None:
+            worker.close(wait=wait)
+
+    def _discard_pending_flac_results(self) -> None:
+        """Discard pending decoded FLAC chunks that no longer match timeline."""
+        if self._flac_worker is not None:
+            self._flac_worker.discard_pending()
 
     def _on_stream_start(self, _message: StreamStartMessage) -> None:
         """Handle stream start by clearing stale audio chunks."""
+        self._discard_pending_flac_results()
         if self.audio_player is not None:
             self.audio_player.clear()
             logger.debug("Cleared audio queue on stream start")
@@ -238,6 +363,7 @@ class AudioStreamHandler:
         if roles is not None and Roles.PLAYER.value not in roles:
             return
 
+        self._discard_pending_flac_results()
         if self.audio_player is not None:
             self.audio_player.clear()
             logger.debug("Cleared audio queue on stream end")
@@ -251,12 +377,15 @@ class AudioStreamHandler:
     def _on_stream_clear(self, roles: list[str] | None) -> None:
         """Handle stream clear by clearing audio queue (e.g., for seek operations)."""
         # For the CLI player, we only care about the player role
-        if (roles is None or Roles.PLAYER.value in roles) and self.audio_player is not None:
-            self.audio_player.clear()
-            logger.debug("Cleared audio queue on stream clear")
+        if roles is None or Roles.PLAYER.value in roles:
+            self._discard_pending_flac_results()
+            if self.audio_player is not None:
+                self.audio_player.clear()
+                logger.debug("Cleared audio queue on stream clear")
 
     def clear_queue(self) -> None:
         """Clear the audio queue to prevent desync."""
+        self._discard_pending_flac_results()
         if self.audio_player is not None:
             self.audio_player.clear()
 
@@ -271,8 +400,10 @@ class AudioStreamHandler:
             if self._on_event:
                 self._on_event("stop")
 
+        self._shutdown_flac_worker(wait=True)
+
         if self.audio_player is not None:
             await self.audio_player.stop()
             self.audio_player = None
         self._current_format = None
-        self._flac_decoder = None
+        self._loop = None

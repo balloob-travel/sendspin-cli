@@ -60,6 +60,8 @@ class FlacDecoder:
         self._pcm_target_format = {16: "s16", 32: "s32"}.get(self._bit_depth)
         self._pcm_resampler: av.AudioResampler | None = None
         self._pcm_resampler_layout: str | None = None
+        self._pcm_resampler_input_format: str | None = None
+        self._pcm_resampler_input_rate: int | None = None
 
     def decode(self, flac_frame: bytes) -> bytes:
         """Decode a FLAC frame to PCM samples.
@@ -151,26 +153,49 @@ class FlacDecoder:
             )
             return b""
 
+        input_rate = frame.sample_rate if frame.sample_rate > 0 else self._sample_rate
         layout_name = frame.layout.name
-        if self._pcm_resampler is None or self._pcm_resampler_layout != layout_name:
-            self._pcm_resampler = av.AudioResampler(
-                format=self._pcm_target_format,
-                layout=frame.layout,
-                rate=self._sample_rate,
-            )
-            self._pcm_resampler_layout = layout_name
-            logger.info(
-                "Initialized PCM resampler: target_format=%s layout=%s channels=%d",
-                self._pcm_target_format,
-                layout_name,
-                self._channels,
-            )
+        input_format_name = frame.format.name
+        if (
+            self._pcm_resampler is None
+            or self._pcm_resampler_layout != layout_name
+            or self._pcm_resampler_input_format != input_format_name
+            or self._pcm_resampler_input_rate != input_rate
+        ):
+            self._init_resampler(frame, layout_name=layout_name, input_rate=input_rate)
 
-        output_frames = self._pcm_resampler.resample(frame)
+        assert self._pcm_resampler is not None
+        try:
+            output_frames = self._pcm_resampler.resample(frame)
+        except ValueError:
+            # PyAV can reject frames if its internal input-frame assumptions changed.
+            self._init_resampler(frame, layout_name=layout_name, input_rate=input_rate)
+            assert self._pcm_resampler is not None
+            output_frames = self._pcm_resampler.resample(frame)
+
         pcm_bytes = bytearray()
         for output_frame in output_frames:
             pcm_bytes.extend(self._extract_frame_bytes(output_frame))
         return bytes(pcm_bytes)
+
+    def _init_resampler(self, frame: av.AudioFrame, *, layout_name: str, input_rate: int) -> None:
+        """Initialize the FFmpeg resampler for the current frame characteristics."""
+        self._pcm_resampler = av.AudioResampler(
+            format=self._pcm_target_format,
+            layout=frame.layout,
+            rate=self._sample_rate,
+        )
+        self._pcm_resampler_layout = layout_name
+        self._pcm_resampler_input_format = frame.format.name
+        self._pcm_resampler_input_rate = input_rate
+        logger.info(
+            "Initialized PCM resampler: target_format=%s layout=%s input_format=%s input_rate=%d channels=%d",
+            self._pcm_target_format,
+            layout_name,
+            frame.format.name,
+            input_rate,
+            self._channels,
+        )
 
     def _extract_frame_bytes(self, frame: av.AudioFrame) -> bytes:
         """Extract interleaved PCM bytes from a frame while ignoring plane padding."""
