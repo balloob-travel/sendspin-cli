@@ -54,21 +54,8 @@ class FlacDecoder:
 
         # Use FFmpeg PCM encoder for packed 24-bit output.
         self._s24_encoder: av.CodecContext | None = None
-        if self._bit_depth == 24:
-            layout = "mono" if self._channels == 1 else "stereo"
-            self._s24_encoder = av.CodecContext.create("pcm_s24le", "w")
-            self._s24_encoder.sample_rate = self._sample_rate  # type: ignore[attr-defined]
-            self._s24_encoder.layout = layout  # type: ignore[attr-defined]
-            self._s24_encoder.format = "s32"  # type: ignore[attr-defined]
-            self._s24_encoder.open()
-            logger.info(
-                "Initialized 24-bit PCM encoder: _s24_encoder=%r _s24_encoder.sample_rate=%r _s24_encoder.layout=%r _s24_encoder.format=%r codec=pcm_s24le channels=%d",
-                self._s24_encoder,
-                getattr(self._s24_encoder, "sample_rate", None),
-                getattr(self._s24_encoder, "layout", None),
-                getattr(self._s24_encoder, "format", None),
-                self._channels,
-            )
+        self._s24_encoder_layout: str | None = None
+        self._s24_encoder_input_format: str | None = None
 
     def decode(self, flac_frame: bytes) -> bytes:
         """Decode a FLAC frame to PCM samples.
@@ -190,7 +177,28 @@ class FlacDecoder:
 
     def _encode_24bit(self, frame: av.AudioFrame) -> bytes:
         """Encode an audio frame to packed 24-bit little-endian PCM."""
-        assert self._s24_encoder is not None
+        layout_name = frame.layout.name
+        input_format_name = frame.format.name
+
+        if (
+            self._s24_encoder is None
+            or self._s24_encoder_layout != layout_name
+            or self._s24_encoder_input_format != input_format_name
+        ):
+            self._s24_encoder = av.CodecContext.create("pcm_s24le", "w")
+            self._s24_encoder.sample_rate = self._sample_rate  # type: ignore[attr-defined]
+            self._s24_encoder.layout = frame.layout  # type: ignore[attr-defined]
+            self._s24_encoder.format = "s32"  # type: ignore[attr-defined]
+            self._s24_encoder.open()
+            self._s24_encoder_layout = layout_name
+            self._s24_encoder_input_format = input_format_name
+            logger.info(
+                "Initialized 24-bit PCM encoder: layout=%s input_format=%s channels=%d",
+                layout_name,
+                input_format_name,
+                self._channels,
+            )
+
         packets = self._s24_encoder.encode(frame)  # type: ignore[attr-defined]
         if not packets:
             return b""
