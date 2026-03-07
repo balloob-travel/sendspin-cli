@@ -97,6 +97,8 @@ def _check_format(device: int | None, rate: int, channels: int, dtype: str) -> b
 
 def detect_supported_audio_formats(
     device: int | None = None,
+    *,
+    prefer_16bit: bool = False,
 ) -> list[SupportedAudioFormat]:
     """Detect supported audio formats by testing dimensions independently.
 
@@ -110,12 +112,15 @@ def detect_supported_audio_formats(
 
     Args:
         device: Audio device ID. None for default device.
+        prefer_16bit: Whether to advertise 16-bit formats ahead of 24-bit ones.
+            This is useful when software volume is active, since 24-bit scaling
+            is more expensive in the playback pipeline.
 
     Returns:
         List of supported audio formats, with FLAC formats first (preferred).
     """
     sample_rates = [48000, 44100, 96000, 192000]
-    bit_depths = [24, 16]
+    bit_depths = [16, 24] if prefer_16bit else [24, 16]
     channel_counts = [2, 1]
 
     # Test each dimension independently
