@@ -30,7 +30,7 @@ class _ChunkWorkItem:
     """Audio chunk submission work for the synchronous audio worker."""
 
     server_timestamp_us: int
-    audio_data: bytes
+    audio_data: bytes | bytearray
     fmt: AudioFormat
 
 
@@ -96,7 +96,9 @@ class _AudioSyncWorker:
         """Whether the worker thread is currently alive."""
         return self._thread is not None and self._thread.is_alive()
 
-    def submit_chunk(self, server_timestamp_us: int, audio_data: bytes, fmt: AudioFormat) -> None:
+    def submit_chunk(
+        self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: AudioFormat
+    ) -> None:
         """Submit one incoming audio chunk for processing."""
         self._enqueue(_ChunkWorkItem(server_timestamp_us, audio_data, fmt))
 
@@ -394,7 +396,7 @@ class AudioStreamHandler:
             worker.clear()
 
     def _on_audio_chunk(
-        self, server_timestamp_us: int, audio_data: bytes, fmt: AudioFormat
+        self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: AudioFormat
     ) -> None:
         """Handle incoming audio chunks by enqueueing them to the sync worker."""
         assert self._client is not None, "Received audio chunk but client is not attached"
