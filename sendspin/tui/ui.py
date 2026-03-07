@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import Any, Self
@@ -16,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from sendspin.discovery import DiscoveredServer
+from sendspin.utils import create_task
 
 
 class _RefreshableLayout:
@@ -31,6 +35,10 @@ class _RefreshableLayout:
 
 # Duration in seconds to highlight a pressed shortcut
 SHORTCUT_HIGHLIGHT_DURATION = 0.15
+REFRESH_COALESCE_DELAY = 1 / 30
+PLAYBACK_REFRESH_INTERVAL = 0.25
+HIGHLIGHT_REFRESH_INTERVAL = 0.05
+RESIZE_POLL_INTERVAL = 0.25
 
 
 @dataclass
@@ -105,6 +113,11 @@ class SendspinUI:
         self._live: Live | None = None
         self._running = False
         self._panel_cache: dict[str, tuple[tuple[Any, ...], Panel]] = {}
+        self._dirty = False
+        self._batch_depth = 0
+        self._refresh_event = asyncio.Event()
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._last_console_size: tuple[int, int] | None = None
 
     @property
     def state(self) -> UIState:
@@ -126,6 +139,70 @@ class SendspinUI:
             return False
         elapsed = time.monotonic() - self._state.highlight_time
         return elapsed < SHORTCUT_HIGHLIGHT_DURATION
+
+    def _has_active_highlight(self) -> bool:
+        """Check if any shortcut highlight animation is still active."""
+        if self._state.highlighted_shortcut is None:
+            return False
+        elapsed = time.monotonic() - self._state.highlight_time
+        return elapsed < SHORTCUT_HIGHLIGHT_DURATION
+
+    def _needs_playback_refresh(self) -> bool:
+        """Check if the progress panel needs periodic refreshes."""
+        return (
+            self._state.playback_state == PlaybackStateType.PLAYING
+            and self._state.progress_updated_at > 0
+            and (self._state.track_duration_ms or 0) > 0
+        )
+
+    def _next_refresh_interval(self) -> float | None:
+        """Return the next periodic refresh interval, if any."""
+        intervals: list[float] = []
+        if self._needs_playback_refresh():
+            intervals.append(PLAYBACK_REFRESH_INTERVAL)
+        if self._has_active_highlight():
+            intervals.append(HIGHLIGHT_REFRESH_INTERVAL)
+        return min(intervals) if intervals else None
+
+    def _flush_refresh(self, *, force: bool = False) -> None:
+        """Refresh the live display if the UI is dirty or animating."""
+        if self._live is None or not (self._dirty or force):
+            return
+        self._update_console_size()
+        self._dirty = False
+        self._live.refresh()
+
+    def _update_console_size(self) -> bool:
+        """Track terminal dimensions and report when they change."""
+        size = self._console.size
+        current_size = (size.width, size.height)
+        changed = self._last_console_size is not None and current_size != self._last_console_size
+        self._last_console_size = current_size
+        return changed
+
+    async def _refresh_loop(self) -> None:
+        """Coalesce dirty updates and drive the few animations the UI uses."""
+        event = self._refresh_event
+
+        while self._running:
+            animation_interval = None if self._dirty else self._next_refresh_interval()
+            interval = (
+                REFRESH_COALESCE_DELAY
+                if self._dirty
+                else animation_interval or RESIZE_POLL_INTERVAL
+            )
+
+            try:
+                await asyncio.wait_for(event.wait(), timeout=interval)
+            except TimeoutError:
+                event.clear()
+                if self._update_console_size():
+                    self._dirty = True
+                self._flush_refresh(force=animation_interval is not None and not self._dirty)
+            except asyncio.CancelledError:
+                break
+            else:
+                event.clear()
 
     def _shortcut_style(self, shortcut: str) -> str:
         """Get the style for a shortcut key."""
@@ -650,9 +727,23 @@ class SendspinUI:
         """Add an event (no-op, events panel removed)."""
 
     def refresh(self) -> None:
-        """Request a UI refresh."""
-        if self._live is not None:
-            self._live.refresh()
+        """Request a coalesced UI refresh."""
+        self._dirty = True
+        if self._live is None or self._batch_depth > 0:
+            return
+
+        self._refresh_event.set()
+
+    @contextmanager
+    def batch_update(self) -> Iterator[None]:
+        """Delay rendering until a related group of state updates completes."""
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0 and self._dirty:
+                self.refresh()
 
     def set_connected(self, url: str) -> None:
         """Update connection status to connected."""
@@ -792,18 +883,24 @@ class SendspinUI:
     def start(self) -> None:
         """Start the live display."""
         self._console.clear()
+        self._update_console_size()
         self._live = Live(
             _RefreshableLayout(self),
             console=self._console,
-            refresh_per_second=4,
+            auto_refresh=False,
             screen=True,
         )
         self._live.start()
         self._running = True
+        self._refresh_task = create_task(self._refresh_loop(), name="sendspin-ui-refresh")
+        self.refresh()
 
     def stop(self) -> None:
         """Stop the live display."""
         self._running = False
+        if self._refresh_task is not None:
+            self._refresh_task.cancel()
+            self._refresh_task = None
         if self._live is not None:
             self._live.stop()
             self._live = None

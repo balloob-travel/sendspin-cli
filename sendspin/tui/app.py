@@ -602,7 +602,10 @@ class SendspinApp:
         assert self._ui is not None
         state = self._state
         ui = self._ui
-        if payload.metadata is not None and state.update_metadata(payload.metadata):
+        if payload.metadata is None or not state.update_metadata(payload.metadata):
+            return
+
+        with ui.batch_update():
             ui.set_metadata(
                 title=state.title,
                 artist=state.artist,
@@ -610,7 +613,7 @@ class SendspinApp:
             )
             ui.set_progress(state.track_progress, state.track_duration)
             ui.set_repeat_shuffle(state.repeat_mode, state.shuffle)
-            ui.add_event(state.describe())
+        ui.add_event(state.describe())
 
     def _handle_group_update(self, payload: GroupUpdateServerPayload) -> None:
         """Handle group update messages."""
@@ -626,33 +629,36 @@ class SendspinApp:
 
         if payload.group_name:
             ui.add_event(f"Group name: {payload.group_name}")
-        ui.set_group_name(payload.group_name)
-        if payload.playback_state:
-            state.playback_state = payload.playback_state
-            ui.set_playback_state(payload.playback_state)
-            ui.add_event(f"Playback state: {payload.playback_state.value}")
+        with ui.batch_update():
+            ui.set_group_name(payload.group_name)
+            if payload.playback_state:
+                state.playback_state = payload.playback_state
+                ui.set_playback_state(payload.playback_state)
+                ui.add_event(f"Playback state: {payload.playback_state.value}")
 
     def _handle_server_state(self, payload: ServerStatePayload) -> None:
         """Handle server/state messages with controller state."""
         assert self._ui is not None
         state = self._state
         ui = self._ui
-        if payload.controller:
-            controller = payload.controller
-            state.supported_commands = set(controller.supported_commands)
+        if not payload.controller:
+            return
 
-            volume_changed = controller.volume != state.volume
-            mute_changed = controller.muted != state.muted
+        controller = payload.controller
+        state.supported_commands = set(controller.supported_commands)
 
-            if volume_changed:
-                state.volume = controller.volume
-                ui.add_event(f"Volume: {controller.volume}%")
-            if mute_changed:
-                state.muted = controller.muted
-                ui.add_event("Muted" if controller.muted else "Unmuted")
+        volume_changed = controller.volume != state.volume
+        mute_changed = controller.muted != state.muted
 
-            if volume_changed or mute_changed:
-                ui.set_volume(state.volume, muted=state.muted)
+        if volume_changed:
+            state.volume = controller.volume
+            ui.add_event(f"Volume: {controller.volume}%")
+        if mute_changed:
+            state.muted = controller.muted
+            ui.add_event("Muted" if controller.muted else "Unmuted")
+
+        if volume_changed or mute_changed:
+            ui.set_volume(state.volume, muted=state.muted)
 
     def _handle_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle server/command messages for player volume/mute control."""
