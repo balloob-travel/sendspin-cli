@@ -88,10 +88,13 @@ jobs:
         with:
           platforms: arm64,arm
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.23.3
+        uses: pypa/cibuildwheel@v3.4.0
+        with:
+          extras: uv
         env:
           CIBW_ENVIRONMENT: "SENDSPIN_REQUIRE_C_EXT=1"
           CIBW_BUILD: cp312-* cp313-*
+          CIBW_BUILD_FRONTEND: "uv"
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_SKIP: "*-musllinux_*"
       - uses: actions/upload-artifact@v5
