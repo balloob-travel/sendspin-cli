@@ -11,7 +11,7 @@ import sys
 import traceback
 from collections.abc import Sequence
 from importlib.metadata import version
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sendspin.hardware_volume import AVAILABLE as HW_VOLUME_AVAILABLE
 from sendspin.hardware_volume import UNAVAILABLE_REASON as HW_VOLUME_UNAVAILABLE_REASON
@@ -31,6 +31,15 @@ Please install PortAudio for your system:
   • Debian/Ubuntu/Raspberry Pi: sudo apt-get install libportaudio2
   • macOS: brew install portaudio
   • Other systems: https://www.portaudio.com/"""
+
+PLAYER_APP_SENTINEL = "player"
+
+
+class ArgumentTarget(Protocol):
+    """Minimal protocol for parser-like objects that accept arguments."""
+
+    def add_argument(self, *name_or_flags: str, **kwargs: Any) -> argparse.Action:
+        """Add an argument to the target."""
 
 
 def arg_str_to_bool(v: str) -> bool:
@@ -72,15 +81,150 @@ def list_audio_devices() -> None:
         sys.exit(1)
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments for the Sendspin client."""
-    parser = argparse.ArgumentParser(description="Sendspin CLI")
+def _add_player_runtime_options(
+    target: ArgumentTarget, *, suppress_defaults: bool = False
+) -> None:
+    """Add the interactive player's runtime options."""
+    default: str | float | None
+    default = argparse.SUPPRESS if suppress_defaults else None
+
+    target.add_argument(
+        "--url",
+        default=default,
+        help=("WebSocket URL of the Sendspin server. If omitted, discover via mDNS."),
+    )
+    target.add_argument(
+        "--name",
+        default=default,
+        help="Friendly name for this client (defaults to hostname)",
+    )
+    target.add_argument(
+        "--id",
+        default=default,
+        help="Unique identifier for this client (defaults to sendspin-cli-<hostname>)",
+    )
+    target.add_argument(
+        "--log-level",
+        default=default,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level to use (default: INFO)",
+    )
+    target.add_argument(
+        "--static-delay-ms",
+        type=float,
+        default=default,
+        help="Extra playback delay in milliseconds applied after clock sync",
+    )
+    target.add_argument(
+        "--audio-device",
+        type=str,
+        default=default,
+        help=(
+            "Audio output device by index (e.g., 0, 1, 2) or name prefix (e.g., 'MacBook'). "
+            "Use --list-audio-devices to see available devices."
+        ),
+    )
+    target.add_argument(
+        "--audio-format",
+        type=str,
+        default=default,
+        help=(
+            "Preferred audio format as codec:sample_rate:bit_depth:channels "
+            "(e.g., flac:48000:24:2). Verified against the audio device on startup."
+        ),
+    )
+    target.add_argument(
+        "--disable-mpris",
+        action="store_true",
+        default=argparse.SUPPRESS if suppress_defaults else False,
+        help="Disable MPRIS integration",
+    )
+    target.add_argument(
+        "--hardware-volume",
+        default=default,
+        type=arg_str_to_bool,
+        help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
+    )
+    target.add_argument(
+        "--hook-start",
+        type=str,
+        default=default,
+        help="Command to run when audio stream starts (receives SENDSPIN_* env vars)",
+    )
+    target.add_argument(
+        "--hook-stop",
+        type=str,
+        default=default,
+        help="Command to run when audio stream stops (receives SENDSPIN_* env vars)",
+    )
+
+
+def _add_player_actions(target: ArgumentTarget, *, suppress_defaults: bool = False) -> None:
+    """Add actions that should also work with the player app."""
+    target.add_argument(
+        "--list-audio-devices",
+        action="store_true",
+        default=argparse.SUPPRESS if suppress_defaults else False,
+        help="List available audio output devices and exit",
+    )
+    target.add_argument(
+        "--list-servers",
+        action="store_true",
+        default=argparse.SUPPRESS if suppress_defaults else False,
+        help="Discover and list available Sendspin servers on the network",
+    )
+    target.add_argument(
+        "--list-clients",
+        action="store_true",
+        default=argparse.SUPPRESS if suppress_defaults else False,
+        help="Discover and list available Sendspin clients on the network",
+    )
+    target.add_argument(
+        "--headless",
+        action="store_true",
+        default=argparse.SUPPRESS if suppress_defaults else False,
+        help=argparse.SUPPRESS,
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the top-level CLI parser."""
+    parser = argparse.ArgumentParser(
+        prog="sendspin",
+        description="Sendspin CLI",
+        epilog=(
+            "If no app is specified, Sendspin runs the player app. "
+            "'sendspin player' is equivalent to 'sendspin'."
+        ),
+    )
+
+    # Keep top-level actions separate from the TUI player's runtime options.
+    parser._optionals.title = "Actions"
     parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {version('sendspin')}",
     )
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subparsers = parser.add_subparsers(
+        dest="command",
+        title="Apps",
+        help="Available apps (default: player)",
+    )
+
+    player_parser = subparsers.add_parser(
+        PLAYER_APP_SENTINEL,
+        description=(
+            "Run the interactive player app. This is the default when no app is specified."
+        ),
+        help="Run the interactive player app (default)",
+    )
+    player_parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {version('sendspin')}",
+    )
+    _add_player_runtime_options(player_parser, suppress_defaults=True)
+    _add_player_actions(player_parser, suppress_defaults=True)
 
     # Serve subcommand
     serve_parser = subparsers.add_parser("serve", help="Start a Sendspin server")
@@ -221,95 +365,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     # Default behavior (client mode) - existing arguments
-    parser.add_argument(
-        "--url",
-        default=None,
-        help=("WebSocket URL of the Sendspin server. If omitted, discover via mDNS."),
-    )
-    parser.add_argument(
-        "--name",
-        default=None,
-        help="Friendly name for this client (defaults to hostname)",
-    )
-    parser.add_argument(
-        "--id",
-        default=None,
-        help="Unique identifier for this client (defaults to sendspin-cli-<hostname>)",
-    )
-    parser.add_argument(
-        "--log-level",
-        default=None,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level to use (default: INFO)",
-    )
-    parser.add_argument(
-        "--static-delay-ms",
-        type=float,
-        default=None,
-        help="Extra playback delay in milliseconds applied after clock sync",
-    )
-    parser.add_argument(
-        "--audio-device",
-        type=str,
-        default=None,
-        help=(
-            "Audio output device by index (e.g., 0, 1, 2) or name prefix (e.g., 'MacBook'). "
-            "Use --list-audio-devices to see available devices."
-        ),
-    )
-    parser.add_argument(
-        "--audio-format",
-        type=str,
-        default=None,
-        help=(
-            "Preferred audio format as codec:sample_rate:bit_depth:channels "
-            "(e.g., flac:48000:24:2). Verified against the audio device on startup."
-        ),
-    )
-    parser.add_argument(
-        "--list-audio-devices",
-        action="store_true",
-        help="List available audio output devices and exit",
-    )
-    parser.add_argument(
-        "--list-servers",
-        action="store_true",
-        help="Discover and list available Sendspin servers on the network",
-    )
-    parser.add_argument(
-        "--list-clients",
-        action="store_true",
-        help="Discover and list available Sendspin clients on the network",
-    )
-    parser.add_argument(
-        "--disable-mpris",
-        action="store_true",
-        help="Disable MPRIS integration",
-    )
-    parser.add_argument(
-        "--hardware-volume",
-        default=None,
-        type=arg_str_to_bool,
-        help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="(DEPRECATED: use 'sendspin daemon' instead) Run without the interactive terminal UI",
-    )
-    parser.add_argument(
-        "--hook-start",
-        type=str,
-        default=None,
-        help="Command to run when audio stream starts (receives SENDSPIN_* env vars)",
-    )
-    parser.add_argument(
-        "--hook-stop",
-        type=str,
-        default=None,
-        help="Command to run when audio stream stops (receives SENDSPIN_* env vars)",
-    )
-    return parser.parse_args(argv)
+    tui_player_options = parser.add_argument_group("Player options")
+    _add_player_runtime_options(tui_player_options)
+    _add_player_actions(parser)
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse CLI arguments for the Sendspin client."""
+    return _build_parser().parse_args(argv)
 
 
 async def list_servers() -> None:
