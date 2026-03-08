@@ -81,9 +81,7 @@ def list_audio_devices() -> None:
         sys.exit(1)
 
 
-def _add_player_runtime_options(
-    target: ArgumentTarget, *, suppress_defaults: bool = False
-) -> None:
+def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bool = False) -> None:
     """Add the interactive player's runtime options."""
     default: str | float | None
     default = argparse.SUPPRESS if suppress_defaults else None
