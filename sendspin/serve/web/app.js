@@ -129,7 +129,7 @@ elements.volumeSlider.addEventListener("input", () => {
 });
 
 const sdkImport = import(
-  "https://unpkg.com/@sendspin/sendspin-js@2.0.2/dist/index.js"
+  "https://unpkg.com/@sendspin/sendspin-js@2.0.3/dist/index.js"
 );
 
 // QR Code generation (using qrcode-generator loaded via script tag)
