@@ -35,9 +35,9 @@ jobs:
     needs: ['validate']
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v6.0.2
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6.0.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install build dependencies
@@ -46,7 +46,7 @@ jobs:
         run: sed -i 's/^version = "0.0.0"/version = "${{ needs.validate.outputs.version }}"/' pyproject.toml
       - name: Build sdist
         run: python3 -m build --sdist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7.0.0
         with:
           name: dist-sdist
           path: ./dist/*.tar.gz
@@ -71,9 +71,9 @@ jobs:
             archs: AMD64
             qemu: false
     steps:
-      - uses: actions/checkout@v5.0.1
+      - uses: actions/checkout@v6.0.2
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v6.0.0
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Set Python project version from tag
@@ -84,7 +84,7 @@ jobs:
           p.write_text(p.read_text().replace('version = "0.0.0"', 'version = "${{ needs.validate.outputs.version }}"', 1))
       - name: Set up QEMU
         if: matrix.qemu
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4.0.0
         with:
           platforms: arm64,arm
       - name: Build wheels
@@ -97,7 +97,7 @@ jobs:
           CIBW_BUILD_FRONTEND: "uv"
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_SKIP: "*-musllinux_*"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7.0.0
         with:
           name: dist-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
@@ -111,7 +111,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8.0.0
         with:
           pattern: dist-*
           path: dist
