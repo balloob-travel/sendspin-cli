@@ -143,6 +143,7 @@ def _add_player_runtime_options(
         "--hardware-volume",
         default=default,
         type=arg_str_to_bool,
+        metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
     )
     target.add_argument(
@@ -343,6 +344,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--hardware-volume",
         default=None,
         type=arg_str_to_bool,
+        metavar="{true,false}",
         help="Enable or disable hardware/system volume control (daemon: on, TUI: off)",
     )
     daemon_parser.add_argument(
