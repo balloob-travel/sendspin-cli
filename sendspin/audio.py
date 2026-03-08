@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import collections
 import concurrent.futures
+import ctypes
 import logging
 import queue
 import time
@@ -46,6 +47,20 @@ SOUNDDEVICE_DTYPE_MAP = {
     24: "int24",
     32: "int32",
 }
+
+_PY_BYTES_AS_STRING = ctypes.pythonapi.PyBytes_AsString
+_PY_BYTES_AS_STRING.argtypes = [ctypes.py_object]
+_PY_BYTES_AS_STRING.restype = ctypes.c_void_p
+
+
+def _bytes_buffer_address(data: bytes) -> int:
+    """Return the base address for a bytes buffer without copying it."""
+    return int(_PY_BYTES_AS_STRING(data))
+
+
+def _writable_buffer_address(buffer: memoryview | bytearray) -> int:
+    """Return the base address for a writable buffer."""
+    return ctypes.addressof(ctypes.c_ubyte.from_buffer(buffer))
 
 
 @dataclass(slots=True)
@@ -279,6 +294,8 @@ class _QueuedChunk:
     """Server timestamp when this chunk should start playing."""
     audio_data: bytes | bytearray
     """Raw PCM audio bytes."""
+    audio_data_ptr: int
+    """Base address for ``audio_data`` to support direct callback copies."""
 
 
 class AudioPlayer:
@@ -415,7 +432,8 @@ class AudioPlayer:
         self._drop_every_n_frames: int = 0
         self._frames_until_next_insert: int = 0
         self._frames_until_next_drop: int = 0
-        self._last_output_frame: bytes = b""
+        self._last_output_frame: bytearray = bytearray()
+        self._last_output_frame_ptr: int = 0
 
         # Sync error smoothing (Kalman filter) and re-anchor cooldown
         self._sync_error_filter = SendspinTimeFilter(process_std_dev=0.01, forget_factor=1.001)
@@ -439,6 +457,7 @@ class AudioPlayer:
         """
         pcm_format = audio_format.pcm_format
         self._format = pcm_format
+        self._reset_output_frame_scratch()
         self._close_stream()
 
         # Reset state on format change
@@ -536,7 +555,7 @@ class AudioPlayer:
         self._drop_every_n_frames = 0
         self._frames_until_next_insert = 0
         self._frames_until_next_drop = 0
-        self._last_output_frame = b""
+        self._reset_output_frame_scratch()
         self._sync_error_filter.reset()
         self._sync_error_filtered_us = 0.0
         self._last_reanchor_loop_time_us = 0
@@ -568,6 +587,7 @@ class AudioPlayer:
 
         bytes_needed = frames * self._format.frame_size
         output_buffer = memoryview(outdata).cast("B")
+        output_base_addr = _writable_buffer_address(output_buffer)
 
         if status:
             # Detect underflow and request re-anchor (processed by main thread)
@@ -575,7 +595,7 @@ class AudioPlayer:
                 logger.warning("Audio underflow detected; requesting re-anchor")
                 self._clear_requested = True
                 # Fill buffer with silence and return early to avoid glitches
-                self._fill_silence(output_buffer, 0, bytes_needed)
+                self._fill_silence(output_base_addr, 0, bytes_needed)
                 return
             logger.debug("Audio callback status: %s", status)
 
@@ -587,14 +607,14 @@ class AudioPlayer:
             # Pre-start gating: fill silence until scheduled start time
             if self._playback_state == PlaybackState.WAITING_FOR_START:
                 bytes_written = self._handle_start_gating(
-                    output_buffer, bytes_written, frames, time
+                    output_base_addr, bytes_written, frames, time
                 )
 
             # If still waiting after gating, fill remaining buffer with silence
             if self._playback_state == PlaybackState.WAITING_FOR_START:
                 if bytes_written < bytes_needed:
                     silence_bytes = bytes_needed - bytes_written
-                    self._fill_silence(output_buffer, bytes_written, silence_bytes)
+                    self._fill_silence(output_base_addr, bytes_written, silence_bytes)
                     bytes_written += silence_bytes
             else:
                 frame_size = self._format.frame_size
@@ -605,11 +625,9 @@ class AudioPlayer:
 
                 # Fast path: no sync corrections needed - use bulk operations
                 if insert_every_n == 0 and drop_every_n == 0:
-                    # Bulk read all frames at once - 15-25x faster than frame-by-frame
-                    frames_data = self._read_input_frames_bulk(frames)
-                    frames_bytes = len(frames_data)
-                    output_buffer[bytes_written : bytes_written + frames_bytes] = frames_data
-                    bytes_written += frames_bytes
+                    bytes_written += self._write_input_frames(
+                        output_base_addr, bytes_written, frames
+                    )
                 else:
                     # Slow path: sync corrections active - process in optimized segments
                     # Reset cadence counters if needed
@@ -617,9 +635,6 @@ class AudioPlayer:
                         self._frames_until_next_insert = insert_every_n
                     if self._frames_until_next_drop <= 0 and drop_every_n > 0:
                         self._frames_until_next_drop = drop_every_n
-
-                    if not self._last_output_frame:
-                        self._last_output_frame = b"\x00" * frame_size
 
                     insert_counter = self._frames_until_next_insert
                     drop_counter = self._frames_until_next_drop
@@ -640,11 +655,8 @@ class AudioPlayer:
                         )
 
                         if next_event_in > 0:
-                            # Bulk read segment of normal frames
-                            segment_data = self._read_input_frames_bulk(next_event_in)
-                            segment_bytes = len(segment_data)
-                            output_buffer[bytes_written : bytes_written + segment_bytes] = (
-                                segment_data
+                            segment_bytes = self._write_input_frames(
+                                output_base_addr, bytes_written, next_event_in
                             )
                             bytes_written += segment_bytes
                             frames_remaining -= next_event_in
@@ -654,15 +666,12 @@ class AudioPlayer:
                         # Handle correction event if at boundary
                         if frames_remaining > 0:
                             if drop_counter <= 0 and drop_every_n > 0:
-                                # Drop frame: read EXTRA frame to advance cursor faster
-                                _ = self._read_one_input_frame()  # Read frame we're replacing
-                                _ = self._read_one_input_frame()  # Read frame we're DROPPING
+                                # Drop frame: skip EXTRA input to advance cursor faster.
+                                self._skip_input_frames(2)
                                 drop_counter = drop_every_n
                                 self._frames_dropped_since_log += 1
                                 # Output last frame instead (don't output either frame we read)
-                                output_buffer[bytes_written : bytes_written + frame_size] = (
-                                    self._last_output_frame
-                                )
+                                self._write_last_output_frame(output_base_addr, bytes_written)
                                 bytes_written += frame_size
                                 frames_remaining -= 1
                                 insert_counter -= 1
@@ -671,9 +680,7 @@ class AudioPlayer:
                                 # This makes playback catch up to cursor (cursor doesn't advance)
                                 insert_counter = insert_every_n
                                 self._frames_inserted_since_log += 1
-                                output_buffer[bytes_written : bytes_written + frame_size] = (
-                                    self._last_output_frame
-                                )
+                                self._write_last_output_frame(output_base_addr, bytes_written)
                                 bytes_written += frame_size
                                 frames_remaining -= 1
                                 drop_counter -= 1
@@ -687,15 +694,13 @@ class AudioPlayer:
             # Fill rest with silence on error
             if bytes_written < bytes_needed:
                 silence_bytes = bytes_needed - bytes_written
-                output_buffer[bytes_written : bytes_written + silence_bytes] = (
-                    b"\x00" * silence_bytes
-                )
+                self._fill_silence(output_base_addr, bytes_written, silence_bytes)
             # Reset partial chunk state on error
             self._current_chunk = None
             self._current_chunk_offset = 0
 
         # Apply volume scaling to the output
-        self._apply_volume(output_buffer)
+        self._apply_volume(output_buffer, output_base_addr, bytes_needed)
 
         # Track callback execution time for performance monitoring
         callback_end_us = self._now_us()
@@ -751,101 +756,52 @@ class AudioPlayer:
         if self._server_ts_cursor_us == 0:
             self._server_ts_cursor_us = self._current_chunk.server_timestamp_us
 
-    def _read_one_input_frame(self) -> bytes | None:
-        """Read and consume a single audio frame from the queue.
-
-        Returns frame bytes or None if no data available.
-        Updates internal cursor and buffer duration when chunks are exhausted.
-        """
-        if self._format is None or self._format.frame_size == 0:
-            return None
-
-        frame_size = self._format.frame_size
-
-        # Ensure we have a current chunk
-        if self._current_chunk is None:
-            try:
-                self._initialize_current_chunk()
-            except queue.Empty:
-                return None
-
-        chunk = self._current_chunk
-        assert chunk is not None
-        data = chunk.audio_data
-        if self._current_chunk_offset >= len(data):
-            # Should not happen, but guard
-            self._advance_finished_chunk()
-            return None
-
-        start = self._current_chunk_offset
-        end = start + frame_size
-        end = min(end, len(data))
-        frame = data[start:end]
-
-        # Advance offsets and timeline cursor
-        self._current_chunk_offset = end
-        self._advance_server_cursor_frames(1)
-
-        # If chunk finished, advance and update buffered duration tracking
-        if self._current_chunk_offset >= len(data):
-            self._advance_finished_chunk()
-
-        # Ensure full frame size by padding nulls if needed (shouldn't occur normally)
-        if len(frame) < frame_size:
-            frame = frame + b"\x00" * (frame_size - len(frame))
-        return frame
-
-    def _read_input_frames_bulk(self, n_frames: int) -> bytes:
-        """Read N frames efficiently in bulk, handling chunk boundaries.
-
-        Returns concatenated frame data. Much faster than calling
-        _read_one_input_frame() N times due to reduced overhead.
-        """
+    def _write_input_frames(self, output_base_addr: int, offset: int, n_frames: int) -> int:
+        """Copy frames from queued audio into the output buffer and pad tail silence."""
         if self._format is None or n_frames <= 0:
-            return b""
+            return 0
 
         frame_size = self._format.frame_size
         total_bytes_needed = n_frames * frame_size
-        result = bytearray(total_bytes_needed)
         bytes_written = 0
 
         while bytes_written < total_bytes_needed:
-            # Get frames from current chunk
             if self._current_chunk is None:
                 try:
                     self._initialize_current_chunk()
                 except queue.Empty:
-                    # No more data - pad with silence
-                    silence_bytes = total_bytes_needed - bytes_written
-                    result[bytes_written:] = b"\x00" * silence_bytes
                     break
 
-            # Calculate how much we can read from current chunk
             assert self._current_chunk is not None
-            chunk_data = self._current_chunk.audio_data
-            available_bytes = len(chunk_data) - self._current_chunk_offset
+            chunk = self._current_chunk
+            available_bytes = len(chunk.audio_data) - self._current_chunk_offset
+            if available_bytes <= 0:
+                self._advance_finished_chunk()
+                continue
+
             bytes_to_read = min(available_bytes, total_bytes_needed - bytes_written)
+            ctypes.memmove(
+                output_base_addr + offset + bytes_written,
+                chunk.audio_data_ptr + self._current_chunk_offset,
+                bytes_to_read,
+            )
 
-            # Bulk copy from chunk to result
-            result[bytes_written : bytes_written + bytes_to_read] = chunk_data[
-                self._current_chunk_offset : self._current_chunk_offset + bytes_to_read
-            ]
-
-            # Update state
             self._current_chunk_offset += bytes_to_read
             bytes_written += bytes_to_read
-            frames_read = bytes_to_read // frame_size
-            self._advance_server_cursor_frames(frames_read)
+            self._advance_server_cursor_frames(bytes_to_read // frame_size)
 
-            # Check if chunk finished
-            if self._current_chunk_offset >= len(chunk_data):
+            if self._current_chunk_offset >= len(chunk.audio_data):
                 self._advance_finished_chunk()
 
-        # Save last frame for potential duplication
-        if bytes_written >= frame_size:
-            self._last_output_frame = bytes(result[bytes_written - frame_size : bytes_written])
+        if bytes_written < total_bytes_needed:
+            self._fill_silence(
+                output_base_addr,
+                offset + bytes_written,
+                total_bytes_needed - bytes_written,
+            )
 
-        return bytes(result)
+        self._store_last_output_frame(output_base_addr, offset + total_bytes_needed - frame_size)
+        return total_bytes_needed
 
     def _advance_finished_chunk(self) -> None:
         """Update durations and state when current chunk is fully consumed."""
@@ -1026,12 +982,48 @@ class AudioPlayer:
         # Cache filtered offset for use in correction logic
         self._sync_error_filtered_us = self._sync_error_filter.offset
 
-    def _fill_silence(self, output_buffer: memoryview, offset: int, num_bytes: int) -> None:
+    def _reset_output_frame_scratch(self) -> None:
+        """Reset reusable frame scratch used by the callback correction path."""
+        frame_size = self._format.frame_size if self._format is not None else 0
+        if frame_size <= 0:
+            self._last_output_frame = bytearray()
+            self._last_output_frame_ptr = 0
+            return
+
+        if len(self._last_output_frame) != frame_size:
+            self._last_output_frame = bytearray(frame_size)
+            self._last_output_frame_ptr = _writable_buffer_address(self._last_output_frame)
+        else:
+            ctypes.memset(self._last_output_frame_ptr, 0, frame_size)
+
+    def _store_last_output_frame(self, output_base_addr: int, offset: int) -> None:
+        """Copy the last fully rendered frame into reusable scratch."""
+        if self._format is None or self._last_output_frame_ptr == 0:
+            return
+        ctypes.memmove(
+            self._last_output_frame_ptr,
+            output_base_addr + offset,
+            self._format.frame_size,
+        )
+
+    def _write_last_output_frame(self, output_base_addr: int, offset: int) -> None:
+        """Write the cached last output frame into the callback buffer."""
+        if self._format is None or self._last_output_frame_ptr == 0:
+            return
+        ctypes.memmove(
+            output_base_addr + offset,
+            self._last_output_frame_ptr,
+            self._format.frame_size,
+        )
+
+    def _fill_silence(self, output_base_addr: int, offset: int, num_bytes: int) -> None:
         """Fill output buffer range with silence."""
         if num_bytes > 0:
-            output_buffer[offset : offset + num_bytes] = b"\x00" * num_bytes
+            ctypes.memset(output_base_addr + offset, 0, num_bytes)
 
-    def _apply_volume(self, output_buffer: memoryview) -> None:
+    def _apply_volume(
+        self, output_buffer: memoryview, output_base_addr: int, num_bytes: int
+    ) -> None:
         """
         Apply volume scaling to the output buffer.
 
@@ -1041,8 +1033,8 @@ class AudioPlayer:
         volume = self._volume
 
         if muted or volume == 0:
-            # Fill with silence
-            self._fill_silence(output_buffer, 0, len(output_buffer))
+            # Fast mute path: zero the callback buffer in place.
+            self._fill_silence(output_base_addr, 0, num_bytes)
             return
 
         if volume == 100:
@@ -1110,7 +1102,7 @@ class AudioPlayer:
 
     def _handle_start_gating(
         self,
-        output_buffer: memoryview,
+        output_base_addr: int,
         bytes_written: int,
         frames: int,
         time: AudioTimeInfo | None = None,
@@ -1153,7 +1145,7 @@ class AudioPlayer:
             )
             frames_to_silence = min(frames_until_start, frames)
             silence_bytes = frames_to_silence * self._format.frame_size
-            self._fill_silence(output_buffer, bytes_written, silence_bytes)
+            self._fill_silence(output_base_addr, bytes_written, silence_bytes)
             bytes_written += silence_bytes
         elif delta_us < 0 and can_drop_frames:
             # Late: fast-forward by dropping input frames (DAC gating only)
@@ -1332,12 +1324,7 @@ class AudioPlayer:
             gap_frames = (gap_us * self._format.sample_rate) // 1_000_000
             silence_bytes = gap_frames * self._format.frame_size
             silence = b"\x00" * silence_bytes
-            self._queue.put_nowait(
-                _QueuedChunk(
-                    server_timestamp_us=self._expected_next_timestamp,
-                    audio_data=silence,
-                )
-            )
+            self._queue.put_nowait(self._make_queued_chunk(self._expected_next_timestamp, silence))
             # Account for inserted silence in buffer duration
             silence_duration_us = (gap_frames * 1_000_000) // self._format.sample_rate
             self._queued_duration_us += silence_duration_us
@@ -1373,11 +1360,7 @@ class AudioPlayer:
             # Compute duration from the post-trim payload
             chunk_frames = len(payload) // self._format.frame_size
             chunk_duration_us = (chunk_frames * 1_000_000) // self._format.sample_rate
-            chunk = _QueuedChunk(
-                server_timestamp_us=server_timestamp_us,
-                audio_data=payload,
-            )
-            self._queue.put_nowait(chunk)
+            self._queue.put_nowait(self._make_queued_chunk(server_timestamp_us, payload))
             # Track duration of queued audio
             self._queued_duration_us += chunk_duration_us
             # Update expected position for next chunk
@@ -1392,6 +1375,14 @@ class AudioPlayer:
                 self._queue.qsize(),
                 self._queued_duration_us / 1_000_000,
             )
+
+    def _make_queued_chunk(self, server_timestamp_us: int, payload: bytes) -> _QueuedChunk:
+        """Build a queued chunk with a stable source pointer for callback copies."""
+        return _QueuedChunk(
+            server_timestamp_us=server_timestamp_us,
+            audio_data=payload,
+            audio_data_ptr=_bytes_buffer_address(payload),
+        )
 
     def _close_stream(self) -> None:
         """Close the audio output stream."""
