@@ -192,10 +192,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sendspin",
         description="Sendspin CLI",
-        epilog=(
-            "If no app is specified, Sendspin runs the player app. "
-            "'sendspin player' is equivalent to 'sendspin'."
-        ),
     )
 
     # Keep top-level actions separate from the TUI player's runtime options.
@@ -213,9 +209,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     player_parser = subparsers.add_parser(
         PLAYER_APP_SENTINEL,
-        description=(
-            "Run the interactive player app. This is the default when no app is specified."
-        ),
+        description="Run the interactive player app.",
         help="Run the interactive player app (default)",
     )
     player_parser.add_argument(
