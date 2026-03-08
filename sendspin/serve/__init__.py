@@ -3,6 +3,7 @@
 import asyncio
 import errno
 import logging
+import os
 import re
 import signal
 import socket
@@ -159,12 +160,13 @@ async def run_server(config: ServeConfig) -> int:
 
     server.add_event_listener(on_server_event)
 
-    # Find an available port
     port = config.port
     max_attempts = 10
     for attempt in range(max_attempts):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if os.name == "posix" and sys.platform != "cygwin":
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
                 s.bind(("", port))
                 break
         except OSError as e:
