@@ -510,7 +510,7 @@ class SendspinApp:
                 ui.set_disconnected("Connection lost")
 
                 # Clean up audio state
-                await audio_handler.cleanup()
+                await audio_handler.reset_connection()
 
                 # Check for pending URL from server selection first
                 pending_server = manager.consume_pending_server()

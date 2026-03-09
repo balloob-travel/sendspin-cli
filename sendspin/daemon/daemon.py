@@ -144,7 +144,11 @@ class SendspinDaemon:
         except asyncio.CancelledError:
             logger.debug("Daemon cancelled")
         finally:
-            await self._stop_mpris_and_audio()
+            if self._mpris is not None:
+                self._mpris.stop()
+                self._mpris = None
+            if self._audio_handler is not None:
+                await self._audio_handler.cleanup()
             if self._client is not None:
                 await self._client.disconnect()
                 self._client = None
@@ -201,12 +205,12 @@ class SendspinDaemon:
             await asyncio.sleep(3600)
 
     async def _stop_mpris_and_audio(self) -> None:
-        """Stop MPRIS and cleanup audio handler."""
+        """Stop MPRIS and reset connection-scoped audio state."""
         if self._mpris is not None:
             self._mpris.stop()
             self._mpris = None
         if self._audio_handler is not None:
-            await self._audio_handler.cleanup()
+            await self._audio_handler.reset_connection()
 
     async def _handle_server_connection(self, ws: web.WebSocketResponse) -> None:
         """Handle an incoming server connection."""
@@ -293,7 +297,7 @@ class SendspinDaemon:
 
                 # Connection dropped
                 logger.info("Disconnected from server")
-                await self._audio_handler.cleanup()
+                await self._audio_handler.reset_connection()
 
                 logger.info("Reconnecting to %s", url)
 
