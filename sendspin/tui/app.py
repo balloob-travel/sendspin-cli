@@ -398,7 +398,7 @@ class SendspinApp:
             if self._ui:
                 self._ui.stop()
             if self._audio_handler:
-                await self._audio_handler.cleanup()
+                await self._audio_handler.shutdown()
             assert self._client is not None
             await self._client.disconnect()
             await self._discovery.stop()
@@ -510,7 +510,7 @@ class SendspinApp:
                 ui.set_disconnected("Connection lost")
 
                 # Clean up audio state
-                await audio_handler.reset_connection()
+                await audio_handler.handle_disconnect()
 
                 # Check for pending URL from server selection first
                 pending_server = manager.consume_pending_server()

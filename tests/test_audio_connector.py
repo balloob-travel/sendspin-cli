@@ -90,7 +90,7 @@ def _make_format() -> SimpleNamespace:
     )
 
 
-def test_audio_worker_restarts_on_stream_start_after_connection_reset(monkeypatch) -> None:
+def test_audio_worker_restarts_on_stream_start_after_disconnect(monkeypatch) -> None:
     monkeypatch.setattr(audio_connector, "_AudioSyncWorker", _FakeWorker)
     _FakeWorker.instances.clear()
 
@@ -105,7 +105,7 @@ def test_audio_worker_restarts_on_stream_start_after_connection_reset(monkeypatc
         handler.set_volume(37, muted=True)
         await asyncio.sleep(0)
 
-        await handler.reset_connection()
+        await handler.handle_disconnect()
         assert len(_FakeWorker.instances) == 1
         assert not _FakeWorker.instances[0].running
 

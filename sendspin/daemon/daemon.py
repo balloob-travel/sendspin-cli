@@ -148,7 +148,7 @@ class SendspinDaemon:
                 self._mpris.stop()
                 self._mpris = None
             if self._audio_handler is not None:
-                await self._audio_handler.cleanup()
+                await self._audio_handler.shutdown()
             if self._client is not None:
                 await self._client.disconnect()
                 self._client = None
@@ -210,7 +210,7 @@ class SendspinDaemon:
             self._mpris.stop()
             self._mpris = None
         if self._audio_handler is not None:
-            await self._audio_handler.reset_connection()
+            await self._audio_handler.handle_disconnect()
 
     async def _handle_server_connection(self, ws: web.WebSocketResponse) -> None:
         """Handle an incoming server connection."""
@@ -297,7 +297,7 @@ class SendspinDaemon:
 
                 # Connection dropped
                 logger.info("Disconnected from server")
-                await self._audio_handler.reset_connection()
+                await self._audio_handler.handle_disconnect()
 
                 logger.info("Reconnecting to %s", url)
 

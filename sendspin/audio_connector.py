@@ -444,8 +444,8 @@ class AudioStreamHandler:
         """Clear the audio queue to prevent desync."""
         self._clear_audio_worker()
 
-    async def reset_connection(self) -> None:
-        """Stop connection-scoped audio state while keeping long-lived monitors active."""
+    async def handle_disconnect(self) -> None:
+        """Reset connection-scoped audio state after a disconnect."""
         if self._stream_active:
             self._stream_active = False
             if self._on_event:
@@ -458,9 +458,9 @@ class AudioStreamHandler:
         self._current_format = None
         self.audio_player = None
 
-    async def cleanup(self) -> None:
+    async def shutdown(self) -> None:
         """Stop audio worker, hardware monitoring, and clear resources."""
-        await self.reset_connection()
+        await self.handle_disconnect()
 
         if self._hw_volume is not None:
             await self._hw_volume.stop_monitoring()
