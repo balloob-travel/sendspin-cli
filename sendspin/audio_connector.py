@@ -382,13 +382,6 @@ class AudioStreamHandler:
         if not self._audio_worker.is_running():
             raise RuntimeError("Audio worker failed to start")
 
-    def _require_audio_worker(self) -> _AudioSyncWorker:
-        """Get a running audio worker or raise immediately."""
-        worker = self._audio_worker
-        if worker is None or not worker.is_running():
-            raise RuntimeError("Audio worker is not running")
-        return worker
-
     def _clear_audio_worker(self) -> None:
         """Clear worker queue when worker is available."""
         worker = self._audio_worker
@@ -399,8 +392,9 @@ class AudioStreamHandler:
         self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: AudioFormat
     ) -> None:
         """Handle incoming audio chunks by enqueueing them to the sync worker."""
-        assert self._client is not None, "Received audio chunk but client is not attached"
-        worker = self._require_audio_worker()
+        worker = self._audio_worker
+        if worker is None or not worker.is_running():
+            raise RuntimeError("Audio worker is not running")
 
         pcm_format = fmt.pcm_format
         if self._current_format != fmt:
@@ -417,6 +411,11 @@ class AudioStreamHandler:
 
     def _on_stream_start(self, _message: StreamStartMessage) -> None:
         """Handle stream start by clearing stale audio chunks."""
+        assert self._client is not None, "Received stream start but client is not attached"
+        if self._audio_worker is None or not self._audio_worker.is_running():
+            self._audio_worker = None
+            self._start_audio_worker(self._client)
+
         self._clear_audio_worker()
 
         if not self._stream_active:
@@ -445,11 +444,8 @@ class AudioStreamHandler:
         """Clear the audio queue to prevent desync."""
         self._clear_audio_worker()
 
-    async def cleanup(self) -> None:
-        """Stop audio worker, hardware monitoring, and clear resources."""
-        if self._hw_volume is not None:
-            await self._hw_volume.stop_monitoring()
-
+    async def handle_disconnect(self) -> None:
+        """Reset connection-scoped audio state after a disconnect."""
         if self._stream_active:
             self._stream_active = False
             if self._on_event:
@@ -461,3 +457,10 @@ class AudioStreamHandler:
 
         self._current_format = None
         self.audio_player = None
+
+    async def shutdown(self) -> None:
+        """Stop audio worker, hardware monitoring, and clear resources."""
+        await self.handle_disconnect()
+
+        if self._hw_volume is not None:
+            await self._hw_volume.stop_monitoring()
