@@ -34,7 +34,9 @@ class _FakeWorker:
     def is_running(self) -> bool:
         return self.running
 
-    def submit_chunk(self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: object) -> None:
+    def submit_chunk(
+        self, server_timestamp_us: int, audio_data: bytes | bytearray, fmt: object
+    ) -> None:
         self.submitted.append((server_timestamp_us, audio_data, fmt))
 
     def clear(self) -> None:
