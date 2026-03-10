@@ -35,7 +35,7 @@ else:
 logger = logging.getLogger(__name__)
 
 VolumeChangeCallback = Callable[[int, bool], None]
-_DEFAULT_SINK_FALLBACK_DEVICE_NAMES = frozenset({"default", "pipewire", "pulse", "pulseaudio"})
+_DEFAULT_SINK_FALLBACK_DEVICE_NAMES = ("default", "pipewire", "pulse", "pulseaudio")
 
 
 async def async_check_available(audio_device: AudioDevice, timeout: float = 2.0) -> bool:
