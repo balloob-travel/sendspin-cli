@@ -82,17 +82,6 @@ def _sink_matches_device(sink: Any, device_name: str) -> bool:
         sink.name,
     )
     return False
-
-
-async def _get_default_sink(client: pulsectl_asyncio.PulseAsync, sinks: list[Any]) -> Any | None:
-    """Return the current default sink, falling back to the first available sink."""
-    server_info = await client.server_info()
-    sink = next((item for item in sinks if item.name == server_info.default_sink_name), None)
-    if sink is None and sinks:
-        sink = sinks[0]
-    return sink
-
-
 async def _get_sink(audio_device: AudioDevice, client: pulsectl_asyncio.PulseAsync) -> Any | None:
     """Return the PulseAudio sink corresponding to *audio_device*, or None if not found."""
     sinks = await client.sink_list()
@@ -106,7 +95,11 @@ async def _get_sink(audio_device: AudioDevice, client: pulsectl_asyncio.PulseAsy
                 "Hardware volume: using default sink for backend device %r",
                 audio_device.name,
             )
-        return await _get_default_sink(client, sinks)
+        server_info = await client.server_info()
+        sink = next((item for item in sinks if item.name == server_info.default_sink_name), None)
+        if sink is None:
+            sink = sinks[0]
+        return sink
 
     device_name = audio_device.name
     matched = next(
