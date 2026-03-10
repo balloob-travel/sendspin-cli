@@ -40,6 +40,8 @@ def test_get_sink_matches_selected_alsa_device() -> None:
     sink = asyncio.run(_get_sink(audio_device, client))
 
     assert sink is sinks[0]
+
+
 def test_get_sink_uses_default_sink_for_pipewire_backend_device() -> None:
     sinks = [
         SimpleNamespace(
