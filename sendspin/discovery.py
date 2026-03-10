@@ -252,18 +252,29 @@ async def discover_clients(discovery_time: float = 3.0) -> list[DiscoveredClient
     Returns:
         List of discovered clients (Sendspin clients and Chromecast devices).
     """
-    from pychromecast.discovery import CastBrowser, SimpleCastListener
+    try:
+        from pychromecast.discovery import CastBrowser, SimpleCastListener
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"pychromecast", "pychromecast.discovery"}:
+            raise
+        CastBrowser = None
+        SimpleCastListener = None
+        logger.debug(
+            "Chromecast discovery disabled because the optional cast extra is not installed"
+        )
 
     loop = asyncio.get_running_loop()
     sendspin_listener = _ClientDiscoveryListener(loop)
 
     async with AsyncZeroconf() as zeroconf:
-        # Start Chromecast discovery (non-blocking)
-        chromecast_browser = CastBrowser(
-            SimpleCastListener(),
-            zeroconf.zeroconf,
-        )
-        chromecast_browser.start_discovery()
+        chromecast_browser = None
+        if CastBrowser is not None and SimpleCastListener is not None:
+            # Start Chromecast discovery (non-blocking) when the optional dependency is present.
+            chromecast_browser = CastBrowser(
+                SimpleCastListener(),
+                zeroconf.zeroconf,
+            )
+            chromecast_browser.start_discovery()
 
         try:
             # Browse Sendspin clients (non-blocking)
@@ -278,19 +289,21 @@ async def discover_clients(discovery_time: float = 3.0) -> list[DiscoveredClient
 
             # Collect Chromecast results
             chromecast_clients: list[DiscoveredClient] = []
-            for cc in chromecast_browser.devices.values():
-                host = cc.host
-                port = cc.port
-                name = cc.friendly_name or f"Chromecast ({host})"
-                host_fmt = f"[{host}]" if ":" in host else host
-                url = f"cast://{host_fmt}:{port}"
-                chromecast_clients.append(
-                    DiscoveredClient(name=name, url=url, host=host, port=port)
-                )
+            if chromecast_browser is not None:
+                for cc in chromecast_browser.devices.values():
+                    host = cc.host
+                    port = cc.port
+                    name = cc.friendly_name or f"Chromecast ({host})"
+                    host_fmt = f"[{host}]" if ":" in host else host
+                    url = f"cast://{host_fmt}:{port}"
+                    chromecast_clients.append(
+                        DiscoveredClient(name=name, url=url, host=host, port=port)
+                    )
 
             return [
                 *sendspin_listener.clients.values(),
                 *chromecast_clients,
             ]
         finally:
-            chromecast_browser.stop_discovery()
+            if chromecast_browser is not None:
+                chromecast_browser.stop_discovery()

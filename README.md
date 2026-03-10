@@ -40,6 +40,11 @@ uvx sendspin serve https://retro.dancewave.online/retrodance.mp3
 uv tool install sendspin
 ```
 
+Support for Chromecast devices requires installation of extra dependencies:
+```bash
+uv tool install 'sendspin[cast]'
+```
+
 **Install as daemon (Linux):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Sendspin/sendspin-cli/refs/heads/main/scripts/systemd/install-systemd.sh | sudo bash

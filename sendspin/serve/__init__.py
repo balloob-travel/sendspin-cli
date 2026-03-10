@@ -1,5 +1,7 @@
 """Sendspin server application."""
 
+from __future__ import annotations
+
 import asyncio
 import errno
 import logging
@@ -11,6 +13,7 @@ import sys
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import qrcode
 from aiosendspin.server import (
@@ -24,16 +27,28 @@ from aiosendspin.server.push_stream import PushStream
 
 from sendspin.utils import create_task
 
-from .chromecast import (
-    ChromecastClient,
-    connect_to_chromecast,
-    disconnect_chromecast,
-    parse_cast_url,
-)
 from .server import SendspinPlayerServer
 from .source import AudioSource, decode_audio
 
+if TYPE_CHECKING:
+    from .chromecast import ChromecastClient
+
 logger = logging.getLogger(__name__)
+
+CAST_INSTALL_HINT = "Install the optional cast extra with `pip install 'sendspin[cast]'`."
+
+
+def _load_chromecast_support() -> Any:
+    """Import Chromecast support only when it is explicitly used."""
+    try:
+        from . import chromecast
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"pychromecast", "pychromecast.discovery"}:
+            raise
+        raise RuntimeError(
+            f"Chromecast support requires the optional 'cast' extra. {CAST_INSTALL_HINT}"
+        ) from exc
+    return chromecast
 
 
 def print_qr_code(url: str) -> None:
@@ -191,11 +206,13 @@ async def run_server(config: ServeConfig) -> int:
             try:
                 print(f"Connecting to client: {client_url}")
                 if client_url.startswith("cast://"):
-                    host, _ = parse_cast_url(client_url)
+                    chromecast = _load_chromecast_support()
+
+                    host, _ = chromecast.parse_cast_url(client_url)
                     # Replace non-alphanumeric chars with dashes (handles IPv4 and IPv6)
                     safe_host = re.sub(r"[^a-zA-Z0-9]", "-", host)
                     player_id = f"cast-{safe_host}"
-                    cc_client = await connect_to_chromecast(
+                    cc_client = await chromecast.connect_to_chromecast(
                         url=client_url,
                         server_url=server_url,
                         player_id=player_id,
@@ -260,8 +277,11 @@ async def run_server(config: ServeConfig) -> int:
 
     finally:
         with suppress(Exception):
-            for cc_client in chromecast_clients:
-                await disconnect_chromecast(cc_client)
+            if chromecast_clients:
+                chromecast = _load_chromecast_support()
+
+                for cc_client in chromecast_clients:
+                    await chromecast.disconnect_chromecast(cc_client)
 
             await server.close()
 
