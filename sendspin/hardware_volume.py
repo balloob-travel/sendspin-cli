@@ -90,7 +90,12 @@ async def _get_sink(audio_device: AudioDevice, client: pulsectl_asyncio.PulseAsy
         logger.error("Hardware volume: no PulseAudio sinks available")
         return None
 
-    if audio_device.is_default:
+    if audio_device.is_default or audio_device.name in (
+        "default",
+        "pipewire",
+        "pulse",
+        "pulseaudio",
+    ):
         server_info = await client.server_info()
         sink = next((s for s in sinks if s.name == server_info.default_sink_name), None)
         if sink is None:
