@@ -82,7 +82,11 @@ class _FakeClient:
     @staticmethod
     def _add_listener(callbacks: list[object], callback: object):
         callbacks.append(callback)
-        return lambda: None
+
+        def unsubscribe() -> None:
+            callbacks.remove(callback)
+
+        return unsubscribe
 
 
 def _make_format() -> SimpleNamespace:
@@ -125,3 +129,33 @@ def test_audio_worker_restarts_on_stream_start_after_disconnect(monkeypatch) -> 
         assert restarted_worker.submitted == [(123_456, b"payload", fmt)]
 
     asyncio.run(exercise())
+
+
+def test_attach_client_replaces_previous_client_listeners(monkeypatch) -> None:
+    monkeypatch.setattr(audio_connector, "_AudioSyncWorker", _FakeWorker)
+    _FakeWorker.instances.clear()
+
+    handler = AudioStreamHandler(
+        audio_device=SimpleNamespace(index=0, name="Fake Device"),
+        volume=10,
+        muted=False,
+    )
+    first_client = _FakeClient()
+    second_client = _FakeClient()
+
+    handler.attach_client(first_client)
+    assert len(first_client.audio_chunk_listeners) == 1
+    assert len(first_client.stream_start_listeners) == 1
+    assert len(first_client.stream_end_listeners) == 1
+    assert len(first_client.stream_clear_listeners) == 1
+
+    handler.attach_client(second_client)
+
+    assert first_client.audio_chunk_listeners == []
+    assert first_client.stream_start_listeners == []
+    assert first_client.stream_end_listeners == []
+    assert first_client.stream_clear_listeners == []
+    assert len(second_client.audio_chunk_listeners) == 1
+    assert len(second_client.stream_start_listeners) == 1
+    assert len(second_client.stream_end_listeners) == 1
+    assert len(second_client.stream_clear_listeners) == 1

@@ -270,6 +270,7 @@ class AudioStreamHandler:
         self.audio_player: AudioPlayer | None = None
 
         self._audio_worker: _AudioSyncWorker | None = None
+        self._client_unsubscribers: list[Callable[[], None]] = []
 
         self._hw_volume: HardwareVolumeController | None = None
         if use_hardware_volume:
@@ -349,24 +350,25 @@ class AudioStreamHandler:
                 )
             )
 
-    def attach_client(self, client: SendspinClient) -> list[Callable[[], None]]:
-        """Attach to a SendspinClient and register listeners.
-
-        Args:
-            client: The Sendspin client to attach to.
-
-        Returns:
-            List of unsubscribe functions for all registered listeners.
-        """
+    def attach_client(self, client: SendspinClient) -> None:
+        """Attach to a SendspinClient and register listeners."""
+        self.detach_client()
         self._client = client
         self._start_audio_worker(client)
 
-        return [
+        self._client_unsubscribers = [
             client.add_audio_chunk_listener(self._on_audio_chunk),
             client.add_stream_start_listener(self._on_stream_start),
             client.add_stream_end_listener(self._on_stream_end),
             client.add_stream_clear_listener(self._on_stream_clear),
         ]
+
+    def detach_client(self) -> None:
+        """Detach from the current client and unregister audio listeners."""
+        for unsubscribe in self._client_unsubscribers:
+            unsubscribe()
+        self._client_unsubscribers = []
+        self._client = None
 
     def _start_audio_worker(self, client: SendspinClient) -> None:
         """Start sync worker once during attach and fail fast if unavailable."""
@@ -460,6 +462,7 @@ class AudioStreamHandler:
 
     async def shutdown(self) -> None:
         """Stop audio worker, hardware monitoring, and clear resources."""
+        self.detach_client()
         await self.handle_disconnect()
 
         if self._hw_volume is not None:
