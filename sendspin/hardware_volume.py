@@ -35,6 +35,7 @@ else:
 logger = logging.getLogger(__name__)
 
 VolumeChangeCallback = Callable[[int, bool], None]
+_DEFAULT_SINK_FALLBACK_DEVICE_NAMES = frozenset({"default", "pipewire", "pulse", "pulseaudio"})
 
 
 async def async_check_available(audio_device: AudioDevice, timeout: float = 2.0) -> bool:
@@ -63,6 +64,17 @@ async def async_check_available(audio_device: AudioDevice, timeout: float = 2.0)
 
 def _sink_matches_device(sink: Any, device_name: str) -> bool:
     """Return True if *sink* corresponds to the given PortAudio *device_name*."""
+    normalized_device_name = _normalize_device_name(device_name)
+    sink_name = _normalize_device_name(getattr(sink, "name", ""))
+    if sink_name and sink_name == normalized_device_name:
+        return True
+
+    description = _normalize_device_name(
+        getattr(sink, "description", "") or sink.proplist.get("device.description", "")
+    )
+    if description and description == normalized_device_name:
+        return True
+
     card_name = sink.proplist.get("alsa.card_name", "")
     alsa_name = sink.proplist.get("alsa.name", "")
     if card_name and alsa_name:
@@ -74,13 +86,35 @@ def _sink_matches_device(sink: Any, device_name: str) -> bool:
             alsa_name,
             device_name,
         )
-        prefix = f"{card_name}: {alsa_name}"
-        return device_name.startswith(prefix)
+        prefix = _normalize_device_name(f"{card_name}: {alsa_name}")
+        return normalized_device_name.startswith(prefix)
     logger.debug(
         "Hardware volume: sink %r missing alsa.card_name or alsa.name proplist fields, skipping match",
         sink.name,
     )
     return False
+
+
+def _normalize_device_name(name: str) -> str:
+    """Normalize a sink/device name for comparisons."""
+    return " ".join(name.split()).casefold()
+
+
+def _should_use_default_sink(audio_device: AudioDevice) -> bool:
+    """Return True when the selected PortAudio device should map to the default sink."""
+    if audio_device.is_default:
+        return True
+
+    return _normalize_device_name(audio_device.name) in _DEFAULT_SINK_FALLBACK_DEVICE_NAMES
+
+
+async def _get_default_sink(client: pulsectl_asyncio.PulseAsync, sinks: list[Any]) -> Any | None:
+    """Return the current default sink, falling back to the first available sink."""
+    server_info = await client.server_info()
+    sink = next((item for item in sinks if item.name == server_info.default_sink_name), None)
+    if sink is None and sinks:
+        sink = sinks[0]
+    return sink
 
 
 async def _get_sink(audio_device: AudioDevice, client: pulsectl_asyncio.PulseAsync) -> Any | None:
@@ -90,12 +124,13 @@ async def _get_sink(audio_device: AudioDevice, client: pulsectl_asyncio.PulseAsy
         logger.error("Hardware volume: no PulseAudio sinks available")
         return None
 
-    if audio_device.is_default:
-        server_info = await client.server_info()
-        sink = next((s for s in sinks if s.name == server_info.default_sink_name), None)
-        if sink is None:
-            sink = sinks[0]
-        return sink
+    if _should_use_default_sink(audio_device):
+        if not audio_device.is_default:
+            logger.debug(
+                "Hardware volume: using default sink for backend device %r",
+                audio_device.name,
+            )
+        return await _get_default_sink(client, sinks)
 
     device_name = audio_device.name
     matched = next(
