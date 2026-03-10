@@ -204,9 +204,9 @@ class SendspinDaemon:
         while True:
             await asyncio.sleep(3600)
 
-    async def _handle_disconnect(self) -> None:
-        """Stop MPRIS and reset connection-scoped audio state."""
-        if self._mpris is not None:
+    async def _handle_disconnect(self, *, stop_mpris: bool = True) -> None:
+        """Reset connection-scoped state and optionally stop MPRIS."""
+        if stop_mpris and self._mpris is not None:
             self._mpris.stop()
             self._mpris = None
         if self._audio_handler is not None:
@@ -297,7 +297,8 @@ class SendspinDaemon:
 
                 # Connection dropped
                 logger.info("Disconnected from server")
-                await self._handle_disconnect()
+                # Keep MPRIS alive across reconnects in client-initiated mode.
+                await self._handle_disconnect(stop_mpris=False)
 
                 logger.info("Reconnecting to %s", url)
 
