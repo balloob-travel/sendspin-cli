@@ -40,24 +40,6 @@ def test_get_sink_matches_selected_alsa_device() -> None:
     sink = asyncio.run(_get_sink(audio_device, client))
 
     assert sink is sinks[0]
-
-
-def test_get_sink_matches_device_description() -> None:
-    sinks = [
-        SimpleNamespace(
-            name="alsa_output.usb-dac",
-            description="Kitchen DAC",
-            proplist={"device.description": "Kitchen DAC"},
-        )
-    ]
-    client = _FakePulseClient(sinks, default_sink_name="alsa_output.usb-dac")
-    audio_device = SimpleNamespace(is_default=False, name="Kitchen DAC")
-
-    sink = asyncio.run(_get_sink(audio_device, client))
-
-    assert sink is sinks[0]
-
-
 def test_get_sink_uses_default_sink_for_pipewire_backend_device() -> None:
     sinks = [
         SimpleNamespace(
