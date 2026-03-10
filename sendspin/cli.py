@@ -33,6 +33,8 @@ Please install PortAudio for your system:
   • Other systems: https://www.portaudio.com/"""
 
 PLAYER_APP_SENTINEL = "player"
+EXPLICIT_APPS = frozenset({PLAYER_APP_SENTINEL, "daemon", "serve"})
+TOP_LEVEL_ACTIONS = frozenset({"-h", "--help", "--version"})
 
 
 class ArgumentTarget(Protocol):
@@ -216,8 +218,8 @@ def _build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {version('sendspin')}",
     )
-    _add_player_runtime_options(player_parser, suppress_defaults=True)
-    _add_player_actions(player_parser, suppress_defaults=True)
+    _add_player_runtime_options(player_parser)
+    _add_player_actions(player_parser)
 
     # Serve subcommand
     serve_parser = subparsers.add_parser("serve", help="Start a Sendspin server")
@@ -358,16 +360,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Command to run when audio stream stops (receives SENDSPIN_* env vars)",
     )
 
-    # Default behavior (client mode) - existing arguments
-    tui_player_options = parser.add_argument_group("Player options")
-    _add_player_runtime_options(tui_player_options)
-    _add_player_actions(parser)
     return parser
+
+
+def _inject_default_app(argv: Sequence[str]) -> list[str]:
+    """Insert the default player app when no explicit app was requested."""
+    parsed_argv = list(argv)
+    if not parsed_argv:
+        return [PLAYER_APP_SENTINEL]
+
+    if parsed_argv[0] in EXPLICIT_APPS | TOP_LEVEL_ACTIONS:
+        return parsed_argv
+
+    return [PLAYER_APP_SENTINEL, *parsed_argv]
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the Sendspin client."""
-    return _build_parser().parse_args(argv)
+    parsed_argv = _inject_default_app(sys.argv[1:] if argv is None else argv)
+    return _build_parser().parse_args(parsed_argv)
 
 
 async def list_servers() -> None:
@@ -586,18 +597,19 @@ def main() -> int:
             traceback.print_exc()
             return 1
 
-    # Handle --list-audio-devices before starting async runtime
-    if args.list_audio_devices:
-        list_audio_devices()
-        return 0
+    if args.command == PLAYER_APP_SENTINEL:
+        # Handle player-only actions before starting async runtime.
+        if args.list_audio_devices:
+            list_audio_devices()
+            return 0
 
-    if args.list_servers:
-        asyncio.run(list_servers())
-        return 0
+        if args.list_servers:
+            asyncio.run(list_servers())
+            return 0
 
-    if args.list_clients:
-        asyncio.run(list_clients())
-        return 0
+        if args.list_clients:
+            asyncio.run(list_clients())
+            return 0
 
     try:
         return asyncio.run(_run_client_mode(args))

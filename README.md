@@ -10,6 +10,10 @@ Sendspin CLI includes three apps:
 - **[`sendspin daemon`](#daemon-mode)** - Background daemon for headless devices
 - **[`sendspin serve`](#sendspin-party)** - Host a Sendspin party to demo Sendspin
 
+When using an explicit app (`daemon`, `serve`, or `player`), put it immediately after
+`sendspin`. For example, use `sendspin daemon --name Kitchen`, not
+`sendspin --name Kitchen daemon`.
+
 <img width="1238" height="634" alt="Screenshot of the Sendspin terminal player" src="https://github.com/user-attachments/assets/2332a283-1994-4847-9265-4014f46abc56" />
 
 
