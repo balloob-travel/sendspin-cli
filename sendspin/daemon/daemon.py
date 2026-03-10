@@ -204,7 +204,7 @@ class SendspinDaemon:
         while True:
             await asyncio.sleep(3600)
 
-    async def _stop_mpris_and_audio(self) -> None:
+    async def _handle_disconnect(self) -> None:
         """Stop MPRIS and reset connection-scoped audio state."""
         if self._mpris is not None:
             self._mpris.stop()
@@ -225,7 +225,7 @@ class SendspinDaemon:
             # Clean up any previous client
             if self._client is not None:
                 logger.info("Disconnecting from previous server")
-                await self._stop_mpris_and_audio()
+                await self._handle_disconnect()
                 if self._client.connected:
                     try:
                         await self._client._send_message(  # noqa: SLF001
@@ -250,13 +250,13 @@ class SendspinDaemon:
                 await client.attach_websocket(ws)
             except TimeoutError:
                 logger.warning("Handshake with server timed out")
-                await self._stop_mpris_and_audio()
+                await self._handle_disconnect()
                 if self._client is client:
                     self._client = None
                 return
             except Exception:
                 logger.exception("Error during server handshake")
-                await self._stop_mpris_and_audio()
+                await self._handle_disconnect()
                 if self._client is client:
                     self._client = None
                 return
@@ -274,7 +274,7 @@ class SendspinDaemon:
         finally:
             # Only cleanup if we're still the active client (not replaced by new connection)
             if self._client is client:
-                await self._stop_mpris_and_audio()
+                await self._handle_disconnect()
 
     async def _connection_loop(self, url: str) -> None:
         """Run the connection loop with automatic reconnection (client-initiated mode)."""
@@ -297,7 +297,7 @@ class SendspinDaemon:
 
                 # Connection dropped
                 logger.info("Disconnected from server")
-                await self._audio_handler.handle_disconnect()
+                await self._handle_disconnect()
 
                 logger.info("Reconnecting to %s", url)
 

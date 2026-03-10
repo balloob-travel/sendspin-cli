@@ -417,6 +417,16 @@ class SendspinApp:
         if not self._audio_handler.use_hardware_volume:
             self._settings.update(player_volume=volume, player_muted=muted)
 
+    async def _handle_disconnect(self, message: str) -> None:
+        """Update UI and reset connection-scoped audio state after a disconnect."""
+        assert self._audio_handler is not None
+        assert self._ui is not None
+
+        logger.info(message)
+        self._ui.add_event(message)
+        self._ui.set_disconnected(message)
+        await self._audio_handler.handle_disconnect()
+
     async def _connect_cancellable(self, url: str) -> None:
         """Connect to server. Can be cancelled by _cancel_connect().
 
@@ -475,7 +485,6 @@ class SendspinApp:
         manager = self._connection_manager
         ui = self._ui
         client = self._client
-        audio_handler = self._audio_handler
         discovery = self._discovery
         url = self._state.selected_server.url
         manager.set_last_attempted_url(url)
@@ -505,12 +514,7 @@ class SendspinApp:
                 unsubscribe()
 
                 # Connection dropped
-                logger.info("Connection lost")
-                ui.add_event("Connection lost")
-                ui.set_disconnected("Connection lost")
-
-                # Clean up audio state
-                await audio_handler.handle_disconnect()
+                await self._handle_disconnect("Connection lost")
 
                 # Check for pending URL from server selection first
                 pending_server = manager.consume_pending_server()
