@@ -35,7 +35,6 @@ else:
 logger = logging.getLogger(__name__)
 
 VolumeChangeCallback = Callable[[int, bool], None]
-_DEFAULT_SINK_FALLBACK_DEVICE_NAMES = ("default", "pipewire", "pulse", "pulseaudio")
 
 
 async def async_check_available(audio_device: AudioDevice, timeout: float = 2.0) -> bool:
@@ -82,6 +81,8 @@ def _sink_matches_device(sink: Any, device_name: str) -> bool:
         sink.name,
     )
     return False
+
+
 async def _get_sink(audio_device: AudioDevice, client: pulsectl_asyncio.PulseAsync) -> Any | None:
     """Return the PulseAudio sink corresponding to *audio_device*, or None if not found."""
     sinks = await client.sink_list()
@@ -89,14 +90,14 @@ async def _get_sink(audio_device: AudioDevice, client: pulsectl_asyncio.PulseAsy
         logger.error("Hardware volume: no PulseAudio sinks available")
         return None
 
-    if audio_device.is_default or audio_device.name in _DEFAULT_SINK_FALLBACK_DEVICE_NAMES:
-        if not audio_device.is_default:
-            logger.debug(
-                "Hardware volume: using default sink for backend device %r",
-                audio_device.name,
-            )
+    if audio_device.is_default or audio_device.name in (
+        "default",
+        "pipewire",
+        "pulse",
+        "pulseaudio",
+    ):
         server_info = await client.server_info()
-        sink = next((item for item in sinks if item.name == server_info.default_sink_name), None)
+        sink = next((s for s in sinks if s.name == server_info.default_sink_name), None)
         if sink is None:
             sink = sinks[0]
         return sink
