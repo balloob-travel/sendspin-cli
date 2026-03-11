@@ -35,6 +35,7 @@ else:
 
 logger = logging.getLogger(__name__)
 
+
 async def async_check_available(audio_device: AudioDevice, timeout: float = 2.0) -> bool:
     """Check if PulseAudio is actually reachable at runtime.
 

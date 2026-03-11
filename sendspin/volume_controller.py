@@ -22,4 +22,3 @@ class VolumeController(Protocol):
 
     async def stop_monitoring(self) -> None:
         """Stop monitoring external state changes."""
-

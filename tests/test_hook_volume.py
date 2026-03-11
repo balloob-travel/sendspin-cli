@@ -9,9 +9,7 @@ from sendspin.settings import ClientSettings
 
 
 class _FakeProcess:
-    def __init__(
-        self, *, returncode: int = 0, stdout: bytes = b"", stderr: bytes = b""
-    ) -> None:
+    def __init__(self, *, returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") -> None:
         self.returncode = returncode
         self._stdout = stdout
         self._stderr = stderr
