@@ -135,7 +135,8 @@ Settings are stored in `~/.config/sendspin/`:
   "log_level": "INFO",
   "listen_port": 8927,
   "use_mpris": true,
-  "use_hardware_volume": true
+  "use_hardware_volume": true,
+  "hook_set_volume": "/usr/local/bin/set-avr-volume"
 }
 ```
 
@@ -166,6 +167,7 @@ Settings are stored in `~/.config/sendspin/`:
 | `listen_port` | integer | daemon/serve | Listen port (`--port`, default: 8927) |
 | `use_mpris` | boolean | TUI/daemon | Enable MPRIS integration (default: true) |
 | `use_hardware_volume` | boolean | TUI/daemon | Control hardware/system output volume instead of software volume (`--hardware-volume true/false`). Default: on for daemon (if available), off for TUI |
+| `hook_set_volume` | string | TUI/daemon | Script to run for external volume control (`--hook-set-volume`). Receives the effective volume 0-100 as the last argument |
 | `hook_start` | string | TUI/daemon | Command to run when audio stream starts |
 | `hook_stop` | string | TUI/daemon | Command to run when audio stream stops |
 | `source` | string | serve | Default audio source (file path or URL, ffmpeg input) |
@@ -249,6 +251,16 @@ sendspin --hardware-volume true             # Enable for TUI
 sendspin daemon --hardware-volume false     # Disable for daemon
 ```
 
+If your real volume control lives on another device, you can hand volume changes off to a script instead:
+
+```bash
+sendspin daemon --hook-set-volume /usr/local/bin/set-avr-volume
+```
+
+The script receives the effective output volume as its last argument in the range `0-100`. When the player is muted, Sendspin calls the script with `0` and keeps the last logical `player_volume` persisted separately so unmuting restores the previous level.
+
+Because Sendspin cannot read back external device state from the hook, startup volume comes from the persisted `player_volume` and `player_muted` settings. Those settings are updated whenever Sendspin successfully applies a new volume through the hook. When `hook_set_volume` is configured, it takes precedence over PulseAudio/PipeWire hardware volume control.
+
 ### Adjusting Playback Delay
 
 The player supports adjusting playback delay to compensate for audio hardware latency or achieve better synchronization across devices.
@@ -288,6 +300,8 @@ Or with inline commands:
 ```bash
 sendspin daemon --hook-start "amixer set Master unmute" --hook-stop "amixer set Master mute"
 ```
+
+`--hook-set-volume` is separate from these stream lifecycle hooks. It is intended for external volume controllers and receives the effective output volume as its last argument.
 
 Hooks receive these environment variables:
 - `SENDSPIN_EVENT` - Event type: "start" or "stop"

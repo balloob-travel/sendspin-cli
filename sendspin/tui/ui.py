@@ -70,7 +70,7 @@ class UIState:
     muted: bool = False
     player_volume: int = 100
     player_muted: bool = False
-    use_hardware_volume: bool = False
+    use_external_volume: bool = False
 
     # Audio format
     audio_codec: str | None = None
@@ -99,7 +99,7 @@ class SendspinUI:
         *,
         player_volume: int = 100,
         player_muted: bool = False,
-        use_hardware_volume: bool = False,
+        use_external_volume: bool = False,
     ) -> None:
         """Initialize the UI."""
         self._console = Console()
@@ -108,7 +108,7 @@ class SendspinUI:
             volume=player_volume,
             player_volume=player_volume,
             player_muted=player_muted,
-            use_hardware_volume=use_hardware_volume,
+            use_external_volume=use_external_volume,
         )
         self._live: Live | None = None
         self._running = False
@@ -349,7 +349,7 @@ class SendspinUI:
         pvol = self._state.player_volume
         pvol_style = "red" if self._state.player_muted else "cyan"
         pvol_text = f"{pvol}%" + (" [MUTED]" if self._state.player_muted else "")
-        player_label = "Hardware:" if self._state.use_hardware_volume else "Player:"
+        player_label = "External:" if self._state.use_external_volume else "Player:"
         info.add_row(player_label, Text(pvol_text, style=pvol_style))
 
         # Vertical container for info + shortcuts
@@ -626,7 +626,7 @@ class SendspinUI:
                 self._state.muted,
                 self._state.player_volume,
                 self._state.player_muted,
-                self._state.use_hardware_volume,
+                self._state.use_external_volume,
                 self._is_highlighted("up"),
                 self._is_highlighted("down"),
                 self._is_highlighted("mute"),
