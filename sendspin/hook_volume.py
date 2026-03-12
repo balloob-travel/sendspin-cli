@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 from sendspin.volume_controller import VolumeChangeCallback
 
 if TYPE_CHECKING:
-    from sendspin.audio import AudioDevice
     from sendspin.settings import ClientSettings
 
 logger = logging.getLogger(__name__)
@@ -24,7 +23,7 @@ class HookVolumeController:
     volume and mute state remain persisted separately in settings.
     """
 
-    def __init__(self, audio_device: AudioDevice, command: str, settings: ClientSettings) -> None:
+    def __init__(self, command: str, settings: ClientSettings) -> None:
         """Initialize the controller."""
         argv = shlex.split(command)
         if not argv:

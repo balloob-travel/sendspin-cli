@@ -720,7 +720,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
     volume_controller: VolumeController | None = None
     if args.hook_set_volume:
         LOGGER.info("Using hook-based external volume control via %s", args.hook_set_volume)
-        volume_controller = HookVolumeController(audio_device, args.hook_set_volume, settings)
+        volume_controller = HookVolumeController(args.hook_set_volume, settings)
     elif args.hardware_volume:
         volume_controller = HardwareVolumeController(audio_device)
 

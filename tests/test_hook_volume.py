@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 
 from sendspin.hook_volume import HookVolumeController
 from sendspin.settings import ClientSettings
@@ -25,11 +24,7 @@ def test_get_state_uses_persisted_settings(tmp_path) -> None:
             player_volume=64,
             player_muted=True,
         )
-        controller = HookVolumeController(
-            SimpleNamespace(index=0, name="Fake Device"),
-            "/usr/bin/set-volume",
-            settings,
-        )
+        controller = HookVolumeController("/usr/bin/set-volume", settings)
 
         assert await controller.get_state() == (64, True)
 
@@ -71,11 +66,7 @@ def test_set_state_runs_hook_and_persists_logical_volume(monkeypatch, tmp_path) 
 
     async def exercise() -> None:
         settings = ClientSettings(_settings_file=tmp_path / "settings.json")
-        controller = HookVolumeController(
-            SimpleNamespace(index=0, name="Fake Device"),
-            "/usr/bin/set-volume --zone main",
-            settings,
-        )
+        controller = HookVolumeController("/usr/bin/set-volume --zone main", settings)
 
         await controller.set_state(42, muted=True)
         await settings.flush()

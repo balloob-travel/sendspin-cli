@@ -91,14 +91,9 @@ class _FakeClient:
 
 
 class _FakeHookController:
-    instances: list[_FakeHookController] = []
-
-    def __init__(self, audio_device: object, command: str, settings: ClientSettings) -> None:
-        self.audio_device = audio_device
-        self.command = command
+    def __init__(self, settings: ClientSettings) -> None:
         self.settings = settings
         self.calls: list[tuple[int, bool]] = []
-        _FakeHookController.instances.append(self)
 
     async def set_state(self, volume: int, *, muted: bool) -> None:
         self.calls.append((volume, muted))
@@ -186,8 +181,6 @@ def test_attach_client_replaces_previous_client_listeners(monkeypatch) -> None:
 
 
 def test_external_volume_controller_updates_logical_volume(tmp_path) -> None:
-    _FakeHookController.instances.clear()
-
     async def exercise() -> None:
         settings = ClientSettings(
             _settings_file=tmp_path / "settings.json",
@@ -195,11 +188,7 @@ def test_external_volume_controller_updates_logical_volume(tmp_path) -> None:
             player_muted=True,
         )
         changes: list[tuple[int, bool]] = []
-        controller = _FakeHookController(
-            SimpleNamespace(index=0, name="Fake Device"),
-            "/usr/bin/set-volume",
-            settings,
-        )
+        controller = _FakeHookController(settings)
         handler = AudioStreamHandler(
             audio_device=SimpleNamespace(index=0, name="Fake Device"),
             volume=10,
