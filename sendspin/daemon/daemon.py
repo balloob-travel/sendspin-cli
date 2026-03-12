@@ -7,6 +7,7 @@ import contextlib
 import logging
 import signal
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from aiohttp import ClientError, web
 from aiosendspin.client import ClientListener, SendspinClient
@@ -29,6 +30,9 @@ from sendspin.hooks import run_hook
 from sendspin.settings import ClientSettings
 from sendspin.utils import create_task, get_device_info
 
+if TYPE_CHECKING:
+    from sendspin.volume_controller import VolumeController
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +49,7 @@ class DaemonArgs:
     listen_port: int = 8928
     use_mpris: bool = True
     preferred_format: SupportedAudioFormat | None = None
-    use_hardware_volume: bool = True
+    volume_controller: VolumeController | None = None
     hook_start: str | None = None
     hook_stop: str | None = None
 
@@ -129,7 +133,7 @@ class SendspinDaemon:
             on_event=self._on_stream_event,
             on_format_change=self._handle_format_change,
             on_volume_change=self._on_volume_change,
-            use_hardware_volume=self._args.use_hardware_volume,
+            volume_controller=self._args.volume_controller,
         )
         await self._audio_handler.read_initial_volume()
         await self._audio_handler.start_volume_monitor()
@@ -166,7 +170,7 @@ class SendspinDaemon:
         assert self._settings is not None
         assert self._audio_handler is not None
 
-        if not self._audio_handler.use_hardware_volume:
+        if not self._audio_handler.uses_external_volume_controller:
             self._settings.update(player_volume=volume, player_muted=muted)
 
     async def _run_client_initiated(self, static_delay_ms: float) -> None:

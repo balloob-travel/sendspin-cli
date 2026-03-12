@@ -14,9 +14,12 @@ from importlib.metadata import version
 from typing import TYPE_CHECKING, Any, Protocol
 
 from sendspin.hardware_volume import AVAILABLE as HW_VOLUME_AVAILABLE
+from sendspin.hardware_volume import HardwareVolumeController
 from sendspin.hardware_volume import UNAVAILABLE_REASON as HW_VOLUME_UNAVAILABLE_REASON
 from sendspin.hardware_volume import async_check_available as hw_volume_check_available
+from sendspin.hook_volume import HookVolumeController
 from sendspin.settings import ClientSettings, get_client_settings, get_serve_settings
+from sendspin.volume_controller import VolumeController
 
 if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
@@ -151,6 +154,12 @@ def _add_player_runtime_options(target: ArgumentTarget, *, suppress_defaults: bo
         type=str,
         default=default,
         help="Command to run when audio stream starts (receives SENDSPIN_* env vars)",
+    )
+    target.add_argument(
+        "--hook-set-volume",
+        type=str,
+        default=default,
+        help="Script to run for external volume control (receives effective volume 0-100)",
     )
     target.add_argument(
         "--hook-stop",
@@ -352,6 +361,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Command to run when audio stream starts (receives SENDSPIN_* env vars)",
+    )
+    daemon_parser.add_argument(
+        "--hook-set-volume",
+        type=str,
+        default=None,
+        help="Script to run for external volume control (receives effective volume 0-100)",
     )
     daemon_parser.add_argument(
         "--hook-stop",
@@ -556,7 +571,10 @@ async def _run_serve_mode(args: argparse.Namespace) -> int:
 
 
 async def _run_daemon_mode(
-    args: argparse.Namespace, settings: ClientSettings, audio_device: AudioDevice
+    args: argparse.Namespace,
+    settings: ClientSettings,
+    audio_device: AudioDevice,
+    volume_controller: VolumeController | None,
 ) -> int:
     """Run the client in daemon mode (no UI)."""
     from sendspin.daemon.daemon import DaemonArgs, SendspinDaemon
@@ -573,7 +591,7 @@ async def _run_daemon_mode(
         listen_port=args.listen_port,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_audio_format(args.audio_format, audio_device),
-        use_hardware_volume=args.hardware_volume,
+        volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
     )
@@ -661,7 +679,9 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
             args.hardware_volume = settings.use_hardware_volume
         else:
             args.hardware_volume = is_daemon and HW_VOLUME_AVAILABLE
-    if args.hardware_volume and not HW_VOLUME_AVAILABLE:
+    if args.hook_set_volume is None:
+        args.hook_set_volume = settings.hook_set_volume
+    if not args.hook_set_volume and args.hardware_volume and not HW_VOLUME_AVAILABLE:
         raise CLIError(
             f"Hardware volume control is not available on this system. "
             f"{HW_VOLUME_UNAVAILABLE_REASON or 'Use --hardware-volume false to disable.'}"
@@ -685,7 +705,11 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
 
     audio_device = _resolve_audio_device(args.audio_device)
 
-    if args.hardware_volume and not await hw_volume_check_available(audio_device):
+    if (
+        not args.hook_set_volume
+        and args.hardware_volume
+        and not await hw_volume_check_available(audio_device)
+    ):
         LOGGER.warning(
             "PulseAudio server not reachable or no matching sink for device %r, "
             "falling back to software volume control",
@@ -693,9 +717,16 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         )
         args.hardware_volume = False
 
+    volume_controller: VolumeController | None = None
+    if args.hook_set_volume:
+        LOGGER.info("Using hook-based external volume control via %s", args.hook_set_volume)
+        volume_controller = HookVolumeController(args.hook_set_volume, settings)
+    elif args.hardware_volume:
+        volume_controller = HardwareVolumeController(audio_device)
+
     # Handle daemon subcommand
     if args.command == "daemon":
-        return await _run_daemon_mode(args, settings, audio_device)
+        return await _run_daemon_mode(args, settings, audio_device, volume_controller)
 
     from sendspin.tui.app import AppArgs, SendspinApp
 
@@ -711,7 +742,7 @@ async def _run_client_mode(args: argparse.Namespace) -> int:
         static_delay_ms=args.static_delay_ms,
         use_mpris=args.use_mpris,
         preferred_format=_resolve_audio_format(args.audio_format, audio_device),
-        use_hardware_volume=args.hardware_volume,
+        volume_controller=volume_controller,
         hook_start=args.hook_start,
         hook_stop=args.hook_stop,
     )

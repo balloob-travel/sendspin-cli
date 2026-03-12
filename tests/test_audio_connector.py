@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import sendspin.audio_connector as audio_connector
 from sendspin.audio_connector import AudioStreamHandler
+from sendspin.settings import ClientSettings
 
 
 class _FakeWorker:
@@ -89,6 +90,24 @@ class _FakeClient:
         return unsubscribe
 
 
+class _FakeHookController:
+    def __init__(self, settings: ClientSettings) -> None:
+        self.settings = settings
+        self.calls: list[tuple[int, bool]] = []
+
+    async def set_state(self, volume: int, *, muted: bool) -> None:
+        self.calls.append((volume, muted))
+
+    async def get_state(self) -> tuple[int, bool]:
+        return self.settings.player_volume, self.settings.player_muted
+
+    async def start_monitoring(self, callback: object) -> None:
+        self.callback = callback
+
+    async def stop_monitoring(self) -> None:
+        return
+
+
 def _make_format() -> SimpleNamespace:
     return SimpleNamespace(
         codec=SimpleNamespace(value="pcm"),
@@ -159,3 +178,36 @@ def test_attach_client_replaces_previous_client_listeners(monkeypatch) -> None:
     assert len(second_client.stream_start_listeners) == 1
     assert len(second_client.stream_end_listeners) == 1
     assert len(second_client.stream_clear_listeners) == 1
+
+
+def test_external_volume_controller_updates_logical_volume(tmp_path) -> None:
+    async def exercise() -> None:
+        settings = ClientSettings(
+            _settings_file=tmp_path / "settings.json",
+            player_volume=22,
+            player_muted=True,
+        )
+        changes: list[tuple[int, bool]] = []
+        controller = _FakeHookController(settings)
+        handler = AudioStreamHandler(
+            audio_device=SimpleNamespace(index=0, name="Fake Device"),
+            volume=10,
+            muted=False,
+            on_volume_change=lambda volume, muted: changes.append((volume, muted)),
+            volume_controller=controller,
+        )
+
+        await handler.read_initial_volume()
+        assert handler.volume == 22
+        assert handler.muted is True
+        assert handler.uses_external_volume_controller is True
+
+        handler.set_volume(41, muted=False)
+        await asyncio.sleep(0)
+
+        assert controller.calls == [(41, False)]
+        assert handler.volume == 41
+        assert handler.muted is False
+        assert changes == [(41, False)]
+
+    asyncio.run(exercise())

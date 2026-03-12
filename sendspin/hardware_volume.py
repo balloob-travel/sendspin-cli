@@ -6,8 +6,9 @@ import asyncio
 import contextlib
 import logging
 import sys
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+
+from sendspin.volume_controller import VolumeChangeCallback
 
 if TYPE_CHECKING:
     from sendspin.audio import AudioDevice
@@ -33,8 +34,6 @@ else:
         )
 
 logger = logging.getLogger(__name__)
-
-VolumeChangeCallback = Callable[[int, bool], None]
 
 
 async def async_check_available(audio_device: AudioDevice, timeout: float = 2.0) -> bool:

@@ -16,11 +16,11 @@ from aiosendspin.models.types import AudioCodec, ClientStateType, Roles
 
 from sendspin.audio import AudioDevice, AudioPlayer
 from sendspin.decoder import FlacDecoder
-from sendspin.hardware_volume import HardwareVolumeController
 from sendspin.utils import create_task
 
 if TYPE_CHECKING:
     from aiosendspin.client import AudioFormat, SendspinClient
+    from sendspin.volume_controller import VolumeController
 
 
 logger = logging.getLogger(__name__)
@@ -278,8 +278,8 @@ class AudioStreamHandler:
     by listening for audio chunks, stream start/end events, and handling
     format changes. Supports PCM and FLAC codecs.
 
-    When hardware volume is enabled, the handler owns a HardwareVolumeController
-    and routes volume changes to it, keeping the software player at full volume.
+    When an external volume controller is provided, the handler routes volume
+    changes to it and keeps the software player at full volume.
     """
 
     def __init__(
@@ -291,7 +291,7 @@ class AudioStreamHandler:
         on_event: Callable[[str], None] | None = None,
         on_format_change: Callable[[str | None, int, int, int], None] | None = None,
         on_volume_change: Callable[[int, bool], None] | None = None,
-        use_hardware_volume: bool = False,
+        volume_controller: VolumeController | None = None,
     ) -> None:
         """Initialize the audio stream handler.
 
@@ -302,7 +302,7 @@ class AudioStreamHandler:
             on_event: Callback for stream lifecycle events ("start" or "stop").
             on_format_change: Callback for format changes (codec, sample_rate, bit_depth, channels).
             on_volume_change: Callback for volume changes.
-            use_hardware_volume: Whether to use hardware volume control if available.
+            volume_controller: Optional external volume controller backend.
         """
         self._audio_device = audio_device
         self._volume = volume
@@ -320,9 +320,7 @@ class AudioStreamHandler:
         self._audio_worker: _AudioSyncWorker | None = None
         self._client_unsubscribers: list[Callable[[], None]] = []
 
-        self._hw_volume: HardwareVolumeController | None = None
-        if use_hardware_volume:
-            self._hw_volume = HardwareVolumeController(audio_device)
+        self._volume_controller: VolumeController | None = volume_controller
 
     @property
     def volume(self) -> int:
@@ -337,28 +335,28 @@ class AudioStreamHandler:
     async def read_initial_volume(self) -> None:
         """Read the effective initial volume state.
 
-        When hardware volume is active, reads the current system volume/mute
+        When an external volume backend is active, reads its logical volume/mute
         state. Otherwise the constructor values are used as-is.
         """
-        if self._hw_volume is None:
+        if self._volume_controller is None:
             return
 
-        self._volume, self._muted = await self._hw_volume.get_state()
+        self._volume, self._muted = await self._volume_controller.get_state()
 
     async def start_volume_monitor(self) -> None:
-        """Start hardware volume monitoring if applicable."""
-        if self._hw_volume is not None:
-            await self._hw_volume.start_monitoring(self._on_hw_volume_change)
+        """Start external volume monitoring if applicable."""
+        if self._volume_controller is not None:
+            await self._volume_controller.start_monitoring(self._publish_volume_state)
 
     @property
-    def use_hardware_volume(self) -> bool:
-        """Whether this handler is using hardware volume control."""
-        return self._hw_volume is not None
+    def uses_external_volume_controller(self) -> bool:
+        """Whether this handler is using an external volume controller."""
+        return self._volume_controller is not None
 
     def set_volume(self, volume: int, *, muted: bool) -> None:
         """Set the volume and muted state.
 
-        Routes to the hardware controller when active, otherwise forwards
+        Routes to the external controller when active, otherwise forwards
         software volume updates to the sync audio worker. Notifies the server
         and fires the on_volume_change callback.
 
@@ -366,21 +364,26 @@ class AudioStreamHandler:
             volume: Volume level (0-100).
             muted: Muted state.
         """
-        if self._hw_volume is not None:
-            create_task(self._hw_volume.set_state(volume, muted=muted))
+        if self._volume_controller is not None:
+            create_task(self._set_external_volume(volume, muted=muted))
             return
 
-        self._volume = volume
-        self._muted = muted
         if self._audio_worker is not None:
             self._audio_worker.set_volume(volume, muted=muted)
 
-        self.send_player_volume()
-        if self._on_volume_change is not None:
-            self._on_volume_change(volume, muted)
+        self._publish_volume_state(volume, muted)
 
-    def _on_hw_volume_change(self, volume: int, muted: bool) -> None:
-        """Handle external hardware volume changes from the controller."""
+    async def _set_external_volume(self, volume: int, *, muted: bool) -> None:
+        """Apply volume through the external controller and update logical state."""
+        assert self._volume_controller is not None
+        await self._volume_controller.set_state(volume, muted=muted)
+        self._publish_volume_state(volume, muted)
+
+    def _publish_volume_state(self, volume: int, muted: bool) -> None:
+        """Store and broadcast a new logical volume state if it changed."""
+        if self._volume == volume and self._muted == muted:
+            return
+
         self._volume = volume
         self._muted = muted
         self.send_player_volume()
@@ -423,7 +426,7 @@ class AudioStreamHandler:
         if self._audio_worker is None:
             self._audio_worker = _AudioSyncWorker(
                 audio_device=self._audio_device,
-                use_software_volume=self._hw_volume is None,
+                use_software_volume=not self.uses_external_volume_controller,
                 volume=self._volume,
                 muted=self._muted,
             )
@@ -509,9 +512,9 @@ class AudioStreamHandler:
         self.audio_player = None
 
     async def shutdown(self) -> None:
-        """Stop audio worker, hardware monitoring, and clear resources."""
+        """Stop audio worker, external volume monitoring, and clear resources."""
         self.detach_client()
         await self.handle_disconnect()
 
-        if self._hw_volume is not None:
-            await self._hw_volume.stop_monitoring()
+        if self._volume_controller is not None:
+            await self._volume_controller.stop_monitoring()
