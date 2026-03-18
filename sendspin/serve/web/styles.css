@@ -279,37 +279,16 @@ header h1 {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
-.sync-dial-label-top {
-  top: 16%;
-  transition:
-    color 0.2s ease,
-    opacity 0.2s ease;
-  left: 50%;
-  transform: translate(-50%, -50%);
-}
-
-.sync-dial-label-left-mid {
-  top: 29%;
-  left: 28%;
-  transform: translate(-50%, -50%);
-}
-
-.sync-dial-label-right-mid {
-  top: 29%;
-  left: 72%;
-  transform: translate(-50%, -50%);
-}
-
 .sync-dial-label-left {
-  top: 56%;
-  left: 18%;
-  transform: translate(-50%, -50%);
+  top: 72%;
+  left: 22%;
+  transform: translate(-50%, -50%) rotate(-29.5deg);
 }
 
 .sync-dial-label-right {
-  top: 56%;
-  left: 82%;
-  transform: translate(-50%, -50%);
+  top: 71%;
+  left: 77%;
+  transform: translate(-50%, -50%) rotate(29.5deg);
 }
 
 .sync-gauge-needle.sync-good {
@@ -360,7 +339,7 @@ header h1 {
   transform: translateX(-50%) rotate(0deg);
   transform-origin: center bottom;
   transition:
-    transform 0.2s ease,
+    transform 0.35s ease-out,
     background 0.2s ease,
     box-shadow 0.2s ease;
 }

@@ -5,6 +5,8 @@
 
 const MAX_VOLUME = 100;
 const SYNC_GAUGE_RANGE_MS = 50;
+const SYNC_DISPLAY_ALPHA = 0.18;
+const SYNC_DISPLAY_RESET_MS = 1000;
 const SYNC_CLASSES = ["sync-good", "sync-warn", "sync-bad", "sync-idle"];
 
 // DOM elements
@@ -28,6 +30,8 @@ const elements = {
 let player = null;
 let syncUpdateInterval = null;
 let isListening = false;
+let smoothedSyncMs = null;
+let lastSyncSampleAtMs = 0;
 
 // Auto-derive server URL from current page location
 const serverUrl = `${location.protocol}//${location.host}`;
@@ -41,6 +45,25 @@ function updateGaugeNeedle(syncMs) {
   );
   const angle = (clampedSyncMs / SYNC_GAUGE_RANGE_MS) * 120;
   elements.syncGaugeNeedle.style.transform = `translateX(-50%) rotate(${angle}deg)`;
+}
+
+function resetDisplayedSync() {
+  smoothedSyncMs = null;
+  lastSyncSampleAtMs = 0;
+}
+
+function getDisplayedSyncMs(syncMs) {
+  const nowMs = performance.now();
+  if (
+    smoothedSyncMs === null ||
+    nowMs - lastSyncSampleAtMs > SYNC_DISPLAY_RESET_MS
+  ) {
+    smoothedSyncMs = syncMs;
+  } else {
+    smoothedSyncMs += (syncMs - smoothedSyncMs) * SYNC_DISPLAY_ALPHA;
+  }
+  lastSyncSampleAtMs = nowMs;
+  return smoothedSyncMs;
 }
 
 function setSyncTone(tone) {
@@ -63,6 +86,7 @@ function setSyncDisplay({
 }
 
 function resetSyncDisplay() {
+  resetDisplayedSync();
   setSyncDisplay({
     label: "Waiting",
     tone: "sync-idle",
@@ -71,11 +95,13 @@ function resetSyncDisplay() {
 }
 
 function updateListenToggle() {
-  elements.listenToggleBtn.textContent = isListening
+  const showStopListening =
+    isListening || elements.playerCard.classList.contains("hidden");
+  elements.listenToggleBtn.textContent = showStopListening
     ? "Stop Listening"
     : "Start Listening";
-  elements.listenToggleBtn.classList.toggle("btn-danger", isListening);
-  elements.listenToggleBtn.classList.toggle("btn-primary", !isListening);
+  elements.listenToggleBtn.classList.toggle("btn-danger", showStopListening);
+  elements.listenToggleBtn.classList.toggle("btn-primary", !showStopListening);
   elements.syncPanel.classList.toggle("hidden", !isListening);
 }
 
@@ -132,9 +158,9 @@ function updateSyncStatus() {
     Number.isFinite(syncInfo.syncErrorMs)
       ? syncInfo.syncErrorMs
       : null;
-  const absSyncMs = syncMs === null ? null : Math.abs(syncMs);
 
   if (!player.isPlaying) {
+    resetDisplayedSync();
     setSyncDisplay({
       label: "Waiting",
       tone: "sync-idle",
@@ -144,6 +170,7 @@ function updateSyncStatus() {
   }
 
   if (syncMs === null) {
+    resetDisplayedSync();
     setSyncDisplay({
       label: "Measuring",
       tone: "sync-idle",
@@ -152,13 +179,15 @@ function updateSyncStatus() {
     return;
   }
 
+  const displayedSyncMs = getDisplayedSyncMs(syncMs);
+  const absSyncMs = Math.abs(displayedSyncMs);
   const clockPrecision = syncInfo.clockPrecision;
 
   if (clockPrecision && clockPrecision !== "precise") {
     setSyncDisplay({
       label: "Syncing",
       tone: "sync-warn",
-      needleMs: syncMs,
+      needleMs: displayedSyncMs,
     });
     return;
   }
@@ -167,7 +196,7 @@ function updateSyncStatus() {
     setSyncDisplay({
       label: "In Sync",
       tone: "sync-good",
-      needleMs: syncMs,
+      needleMs: displayedSyncMs,
     });
     return;
   }
@@ -176,7 +205,7 @@ function updateSyncStatus() {
     setSyncDisplay({
       label: "Adjusting",
       tone: "sync-warn",
-      needleMs: syncMs,
+      needleMs: displayedSyncMs,
     });
     return;
   }
@@ -184,7 +213,7 @@ function updateSyncStatus() {
   setSyncDisplay({
     label: "Out of Sync",
     tone: "sync-bad",
-    needleMs: syncMs,
+    needleMs: displayedSyncMs,
   });
 }
 
