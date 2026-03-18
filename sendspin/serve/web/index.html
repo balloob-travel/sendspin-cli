@@ -25,18 +25,37 @@
 
       <!-- Player controls (hidden until started) -->
       <div id="player-card" class="card player hidden">
-        <div class="player-volume">
-          <button id="mute-btn" class="btn btn-icon" title="Toggle Mute">
-            <span id="mute-icon">&#128266;</span>
-          </button>
-          <input type="range" id="volume-slider" min="0" max="100" value="80" />
-          <span id="volume-value">80%</span>
-        </div>
-        <div class="player-status">
-          <span id="sync-status" class="sync-badge">-</span>
-          <button id="disconnect-btn" class="btn btn-small btn-danger">
-            Disconnect
-          </button>
+        <button id="listen-toggle-btn" class="btn btn-danger btn-xlarge">
+          Stop Listening
+        </button>
+        <div class="sync-panel">
+          <div class="sync-panel-header">
+            <span class="sync-panel-title">Sync Gauge</span>
+            <span id="sync-status" class="sync-badge sync-idle">Waiting</span>
+          </div>
+          <div class="sync-gauge">
+            <div id="sync-dial" class="sync-dial">
+              <div class="sync-dial-face">
+                <span class="sync-dial-mark major" style="--angle: -120deg"></span>
+                <span class="sync-dial-mark minor" style="--angle: -90deg"></span>
+                <span class="sync-dial-mark major" style="--angle: -60deg"></span>
+                <span class="sync-dial-mark minor" style="--angle: -30deg"></span>
+                <span class="sync-dial-mark major" style="--angle: 0deg"></span>
+                <span class="sync-dial-mark minor" style="--angle: 30deg"></span>
+                <span class="sync-dial-mark major" style="--angle: 60deg"></span>
+                <span class="sync-dial-mark minor" style="--angle: 90deg"></span>
+                <span class="sync-dial-mark major" style="--angle: 120deg"></span>
+                <span class="sync-dial-label sync-dial-label-left-mid">-25</span>
+                <span class="sync-dial-label sync-dial-label-right-mid">+25</span>
+                <span class="sync-dial-label sync-dial-label-left">-50</span>
+                <span class="sync-dial-label sync-dial-label-right">+50</span>
+                <span class="sync-dial-brand">SYNC</span>
+                <span class="sync-dial-unit">milliseconds</span>
+                <div id="sync-gauge-needle" class="sync-gauge-needle"></div>
+                <div class="sync-gauge-cap"></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -97,6 +116,6 @@
       </footer>
     </div>
 
-    <script type="module" src="app.js"></script>
+    <script type="module" src="app.js?v=6"></script>
   </body>
 </html>
