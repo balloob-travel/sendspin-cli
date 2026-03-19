@@ -329,10 +329,10 @@ class SendspinDaemon:
         player_cmd = payload.player
 
         if player_cmd.command == PlayerCommand.VOLUME and player_cmd.volume is not None:
-            self._audio_handler.set_volume(player_cmd.volume, muted=self._settings.player_muted)
+            self._audio_handler.set_volume(player_cmd.volume, muted=self._audio_handler.muted)
             logger.info("Server set player volume: %d%%", player_cmd.volume)
         elif player_cmd.command == PlayerCommand.MUTE and player_cmd.mute is not None:
-            self._audio_handler.set_volume(self._settings.player_volume, muted=player_cmd.mute)
+            self._audio_handler.set_volume(self._audio_handler.volume, muted=player_cmd.mute)
             logger.info("Server %s player", "muted" if player_cmd.mute else "unmuted")
 
     def _handle_format_change(
