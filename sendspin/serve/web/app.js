@@ -7,15 +7,17 @@ const MAX_VOLUME = 100;
 const SYNC_GAUGE_RANGE_MS = 50;
 const SYNC_DISPLAY_ALPHA = 0.18;
 const SYNC_DISPLAY_RESET_MS = 1000;
+const UI_ACTIVATION_MS = 550;
+const START_HAPTIC_PATTERN = [18, 28, 24];
+const STOP_HAPTIC_PATTERN = [14];
 const SYNC_CLASSES = ["sync-good", "sync-warn", "sync-bad", "sync-idle"];
 
 // DOM elements
 const elements = {
-  startCard: document.getElementById("start-card"),
-  startBtn: document.getElementById("start-btn"),
-  playerCard: document.getElementById("player-card"),
+  body: document.body,
+  controlCard: document.getElementById("control-card"),
   listenToggleBtn: document.getElementById("listen-toggle-btn"),
-  syncPanel: document.querySelector(".sync-panel"),
+  syncPanel: document.getElementById("sync-panel"),
   syncStatus: document.getElementById("sync-status"),
   syncDial: document.getElementById("sync-dial"),
   syncGaugeNeedle: document.getElementById("sync-gauge-needle"),
@@ -30,6 +32,8 @@ const elements = {
 let player = null;
 let syncUpdateInterval = null;
 let isListening = false;
+let isStarting = false;
+let showPostAnimationLabel = false;
 let smoothedSyncMs = null;
 let lastSyncSampleAtMs = 0;
 
@@ -37,6 +41,24 @@ let lastSyncSampleAtMs = 0;
 const serverUrl = `${location.protocol}//${location.host}`;
 elements.shareServerUrl.textContent = serverUrl;
 elements.shareServerUrl.href = serverUrl;
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function triggerHaptic(pattern) {
+  if (typeof navigator.vibrate !== "function") {
+    return;
+  }
+
+  try {
+    navigator.vibrate(pattern);
+  } catch (err) {
+    console.warn("Failed to trigger vibration:", err);
+  }
+}
 
 function updateGaugeNeedle(syncMs) {
   const clampedSyncMs = Math.max(
@@ -94,15 +116,23 @@ function resetSyncDisplay() {
   });
 }
 
-function updateListenToggle() {
-  const showStopListening =
-    isListening || elements.playerCard.classList.contains("hidden");
-  elements.listenToggleBtn.textContent = showStopListening
+function updateUiState() {
+  const pageIsActive = isListening || isStarting;
+
+  elements.body.classList.toggle("is-listening", pageIsActive);
+  elements.body.classList.toggle("is-starting", isStarting);
+  elements.controlCard.classList.toggle("is-expanded", pageIsActive);
+  elements.syncPanel.setAttribute("aria-hidden", String(!pageIsActive));
+  elements.listenToggleBtn.setAttribute("aria-pressed", String(pageIsActive));
+
+  if (isStarting && showPostAnimationLabel) {
+    elements.listenToggleBtn.textContent = "Connecting...";
+    return;
+  }
+
+  elements.listenToggleBtn.textContent = isListening
     ? "Stop Listening"
     : "Start Listening";
-  elements.listenToggleBtn.classList.toggle("btn-danger", showStopListening);
-  elements.listenToggleBtn.classList.toggle("btn-primary", !showStopListening);
-  elements.syncPanel.classList.toggle("hidden", !isListening);
 }
 
 function handlePlayerStateChange() {
@@ -155,7 +185,7 @@ function updateSyncStatus() {
   const syncInfo = player.syncInfo ?? {};
   const syncMs =
     typeof syncInfo.syncErrorMs === "number" &&
-    Number.isFinite(syncInfo.syncErrorMs)
+      Number.isFinite(syncInfo.syncErrorMs)
       ? syncInfo.syncErrorMs
       : null;
 
@@ -218,24 +248,45 @@ function updateSyncStatus() {
 }
 
 async function startListening() {
-  isListening = true;
-  updateListenToggle();
+  if (isListening || isStarting) {
+    return;
+  }
 
-  elements.startCard.classList.add("hidden");
-  elements.playerCard.classList.remove("hidden");
+  isListening = true;
+  isStarting = true;
+  showPostAnimationLabel = false;
   elements.listenToggleBtn.disabled = true;
-  elements.startBtn.disabled = true;
-  elements.startBtn.textContent = "Connecting...";
+  updateUiState();
+
+  setSyncDisplay({
+    label: "Connecting",
+    tone: "sync-idle",
+    needleMs: 0,
+  });
 
   try {
-    if (!player) {
-      setSyncDisplay({
-        label: "Connecting",
-        tone: "sync-idle",
-        needleMs: 0,
-      });
-      await initPlayer();
+    let connectPromise;
+
+    if (player?.isConnected) {
+      connectPromise = Promise.resolve();
+    } else {
+      if (player) {
+        try {
+          player.disconnect("user_request");
+        } catch (disconnectErr) {
+          console.warn("Failed to reset stale player before reconnect:", disconnectErr);
+        } finally {
+          player = null;
+        }
+      }
+      connectPromise = initPlayer();
     }
+
+    await wait(UI_ACTIVATION_MS);
+    showPostAnimationLabel = true;
+    updateUiState();
+
+    await connectPromise;
 
     player.setVolume(MAX_VOLUME);
     player.setMuted(false);
@@ -244,20 +295,24 @@ async function startListening() {
     console.error("Connection failed:", err);
     disconnect();
   } finally {
+    isStarting = false;
+    showPostAnimationLabel = false;
     elements.listenToggleBtn.disabled = false;
-    elements.startBtn.disabled = false;
-    elements.startBtn.textContent = "Start Listening";
-    updateListenToggle();
+    updateUiState();
   }
 }
 
 function stopListening() {
   isListening = false;
-  updateListenToggle();
+  isStarting = false;
+  showPostAnimationLabel = false;
+
   if (player?.isConnected) {
     player.setMuted(true);
   }
-  updateSyncStatus();
+
+  resetSyncDisplay();
+  updateUiState();
 }
 
 /**
@@ -275,15 +330,12 @@ function disconnect() {
   }
 
   isListening = false;
-  updateListenToggle();
-
-  // Reset UI
-  elements.startBtn.disabled = false;
-  elements.startBtn.textContent = "Start Listening";
+  isStarting = false;
+  showPostAnimationLabel = false;
   elements.listenToggleBtn.disabled = false;
-  elements.playerCard.classList.add("hidden");
-  elements.startCard.classList.remove("hidden");
+
   resetSyncDisplay();
+  updateUiState();
 }
 
 // Set up Cast link with server URL
@@ -295,16 +347,14 @@ if (["localhost", "127.0.0.1"].includes(location.hostname)) {
   elements.shareCard.textContent = "Sharing disabled when visiting localhost";
 }
 
-// Start button - required for AudioContext to work
-elements.startBtn.addEventListener("click", async () => {
-  await startListening();
-});
-
 elements.listenToggleBtn.addEventListener("click", async () => {
   if (isListening) {
+    triggerHaptic(STOP_HAPTIC_PATTERN);
     stopListening();
     return;
   }
+
+  triggerHaptic(START_HAPTIC_PATTERN);
   await startListening();
 });
 
@@ -340,5 +390,5 @@ elements.shareBtn.addEventListener("click", async () => {
   }, 2000);
 });
 
-updateListenToggle();
+updateUiState();
 resetSyncDisplay();

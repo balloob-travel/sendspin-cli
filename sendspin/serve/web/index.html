@@ -7,7 +7,7 @@
     <meta property="og:title" content="Sendspin Party" />
     <meta property="og:description" content="Experience multi-room audio with Sendspin - perfectly synchronized audio streaming across all your devices using the open Sendspin protocol." />
     <meta property="og:type" content="website" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=8" />
     <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js"></script>
   </head>
   <body>
@@ -16,19 +16,15 @@
         <h1>Sendspin Party</h1>
       </header>
 
-      <!-- Start button -->
-      <div id="start-card" class="card start">
-        <button id="start-btn" class="btn btn-primary btn-xlarge">
+      <div id="control-card" class="card control-card">
+        <button
+          id="listen-toggle-btn"
+          class="btn btn-xlarge"
+          aria-pressed="false"
+        >
           Start Listening
         </button>
-      </div>
-
-      <!-- Player controls (hidden until started) -->
-      <div id="player-card" class="card player hidden">
-        <button id="listen-toggle-btn" class="btn btn-danger btn-xlarge">
-          Stop Listening
-        </button>
-        <div class="sync-panel">
+        <div id="sync-panel" class="sync-panel" aria-hidden="true">
           <div class="sync-panel-header">
             <span class="sync-panel-title">Synchronization</span>
             <span id="sync-status" class="sync-badge sync-idle">Waiting</span>
@@ -114,6 +110,6 @@
       </footer>
     </div>
 
-    <script type="module" src="app.js?v=7"></script>
+    <script type="module" src="app.js?v=8"></script>
   </body>
 </html>
