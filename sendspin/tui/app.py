@@ -675,10 +675,10 @@ class SendspinApp:
         player_cmd: PlayerCommandPayload = payload.player
 
         if player_cmd.command == PlayerCommand.VOLUME and player_cmd.volume is not None:
-            self._audio_handler.set_volume(player_cmd.volume, muted=self._state.player_muted)
+            self._audio_handler.set_volume(player_cmd.volume, muted=self._audio_handler.muted)
             self._ui.add_event(f"Server set player volume: {player_cmd.volume}%")
         elif player_cmd.command == PlayerCommand.MUTE and player_cmd.mute is not None:
-            self._audio_handler.set_volume(self._state.player_volume, muted=player_cmd.mute)
+            self._audio_handler.set_volume(self._audio_handler.volume, muted=player_cmd.mute)
             self._ui.add_event(
                 "Server muted player" if player_cmd.mute else "Server unmuted player"
             )
